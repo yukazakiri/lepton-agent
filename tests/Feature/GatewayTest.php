@@ -22,3 +22,23 @@ it('fake gateway tracks balances in memory', function (): void {
         ->and($gateway->balance('0xSRC')->amountBaseUnits)->toBe(400_000000)
         ->and($gateway->balance('0xDST')->amountBaseUnits)->toBe(100_000000);
 });
+
+it('converts hex quantities above PHP_INT_MAX exactly', function (string $hex, int $decimals, string $expected): void {
+    expect(Amounts::fromHexQuantity($hex, $decimals))->toBe($expected);
+})->with([
+    // Would overflow a 64-bit int cast: 20e18 wei.
+    ['0x1158e460913d00000', 18, '20'],
+    ['0x4563918244f40000', 18, '5'],
+    ['0x0', 18, '0.000000000000000000'],
+    ['0x1', 18, '0.000000000000000001'],
+    ['0xde0b6b3a7640000', 18, '1'],
+    ['0x3d667a7', 0, '64382887'],
+    ['0x0', 0, '0'],
+    ['0xf4240', 6, '1'],
+    ['0x186a0', 6, '0.1'],
+]);
+
+it('rejects malformed hex quantities', function (): void {
+    expect(fn () => Amounts::fromHexQuantity('nothex'))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => Amounts::fromHexQuantity(''))->toThrow(InvalidArgumentException::class);
+});

@@ -54,4 +54,73 @@ final class Amounts
 
         return $whole.'.'.$fraction;
     }
+
+    /**
+     * Convert a JSON-RPC hex quantity to an exact decimal string.
+     *
+     * Uses string arithmetic so values above PHP_INT_MAX stay precise. Arc
+     * native USDC is 18 decimals, so 20 USDC is 2e19 wei, which overflows a
+     * 64-bit integer and silently corrupts any hexdec() cast.
+     */
+    public static function fromHexQuantity(string $hex, int $decimals = 18): string
+    {
+        $hex = strtolower(trim($hex));
+
+        if ($hex === '' || ! preg_match('/^0x[0-9a-f]+$/', $hex)) {
+            throw new InvalidArgumentException("Invalid hex quantity [{$hex}].");
+        }
+
+        $digits = substr($hex, 2);
+        $decimal = '0';
+
+        foreach (str_split($digits) as $digit) {
+            // decimal = decimal * 16 + digit, all in string space.
+            $carry = (int) hexdec($digit);
+            $out = '';
+
+            for ($i = strlen($decimal) - 1; $i >= 0; $i--) {
+                $value = ((int) $decimal[$i]) * 16 + $carry;
+                $out = (string) ($value % 10).$out;
+                $carry = intdiv($value, 10);
+            }
+
+            while ($carry > 0) {
+                $out = (string) ($carry % 10).$out;
+                $carry = intdiv($carry, 10);
+            }
+
+            $decimal = ltrim($out, '0');
+
+            if ($decimal === '') {
+                $decimal = '0';
+            }
+        }
+
+        return self::placeDecimalPoint($decimal, $decimals);
+    }
+
+    /**
+     * Insert a decimal point $decimals from the right of a digit string.
+     */
+    public static function placeDecimalPoint(string $digits, int $decimals): string
+    {
+        if ($decimals <= 0) {
+            return ltrim($digits, '0') ?: '0';
+        }
+
+        $digits = ltrim($digits, '0');
+
+        if ($digits === '') {
+            return '0.'.str_repeat('0', $decimals - 1).'0';
+        }
+
+        if (strlen($digits) <= $decimals) {
+            $digits = str_pad($digits, $decimals + 1, '0', STR_PAD_LEFT);
+        }
+
+        $whole = substr($digits, 0, -$decimals);
+        $fraction = rtrim(substr($digits, -$decimals), '0');
+
+        return $fraction === '' ? $whole : $whole.'.'.$fraction;
+    }
 }
