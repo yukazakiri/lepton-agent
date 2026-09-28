@@ -46,7 +46,7 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
         $txHash = '0x'.bin2hex(random_bytes(32));
         $this->transactions[] = ['id' => $txHash, 'txHash' => $txHash, 'state' => 'confirmed'];
 
-        return new TransferResult($txHash, $fromAddress, $toAddress, $amountBaseUnits, $chain, true, $txHash, ['fake' => true]);
+        return new TransferResult($txHash, $fromAddress, $toAddress, $amountBaseUnits, $chain, true, 'https://testnet.arcscan.app/tx/'.$txHash, ['fake' => true]);
     }
 
     public function balance(string $address, array $options = []): BalanceResult
