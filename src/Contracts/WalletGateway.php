@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Contracts;
+namespace Yukazakiri\Lepton\Contracts;
 
-use Eduflow\Lepton\DTOs\BalanceResult;
-use Eduflow\Lepton\DTOs\TransactionRecord;
-use Eduflow\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\TransactionRecord;
+use Yukazakiri\Lepton\DTOs\TransferResult;
 
 interface WalletGateway
 {

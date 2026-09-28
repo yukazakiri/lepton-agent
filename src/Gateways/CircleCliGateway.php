@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Gateways;
+namespace Yukazakiri\Lepton\Gateways;
 
-use Eduflow\Lepton\Contracts\ArcNetworkGateway;
-use Eduflow\Lepton\Contracts\WalletGateway;
-use Eduflow\Lepton\Contracts\X402Gateway;
-use Eduflow\Lepton\DTOs\BalanceResult;
-use Eduflow\Lepton\DTOs\TransactionRecord;
-use Eduflow\Lepton\DTOs\TransferResult;
-use Eduflow\Lepton\Support\Amounts;
-use Eduflow\Lepton\Support\CliRunner;
+use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\X402Gateway;
+use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\TransactionRecord;
+use Yukazakiri\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\Support\Amounts;
+use Yukazakiri\Lepton\Support\CliRunner;
 use Illuminate\Support\Str;
 
 final class CircleCliGateway implements WalletGateway, X402Gateway

@@ -24,24 +24,29 @@
     },
     "autoload": {
         "psr-4": {
-            "Eduflow\\Lepton\\": "src/"
+            "Yukazakiri\\Lepton\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Eduflow\\Lepton\\Tests\\": "tests/"
+            "Yukazakiri\\Lepton\\Tests\\": "tests/"
         }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "Eduflow\\Lepton\\LeptonServiceProvider"
+                "Yukazakiri\\Lepton\\LeptonServiceProvider"
             ],
             "aliases": {
-                "Lepton": "Eduflow\\Lepton\\Facades\\Lepton"
+                "Lepton": "Yukazakiri\\Lepton\\Facades\\Lepton"
             }
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
 }

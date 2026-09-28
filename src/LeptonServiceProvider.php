@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton;
+namespace Yukazakiri\Lepton;
 
-use Eduflow\Lepton\Contracts\ArcNetworkGateway;
-use Eduflow\Lepton\Contracts\WalletGateway;
-use Eduflow\Lepton\Contracts\X402Gateway;
-use Eduflow\Lepton\Gateways\ArcCanteenGateway;
-use Eduflow\Lepton\Gateways\CircleCliGateway;
-use Eduflow\Lepton\Gateways\FakeLeptonGateway;
-use Eduflow\Lepton\Support\CliRunner;
+use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\X402Gateway;
+use Yukazakiri\Lepton\Gateways\ArcCanteenGateway;
+use Yukazakiri\Lepton\Gateways\CircleCliGateway;
+use Yukazakiri\Lepton\Gateways\FakeLeptonGateway;
+use Yukazakiri\Lepton\Support\CliRunner;
 use Illuminate\Support\ServiceProvider;
 
 final class LeptonServiceProvider extends ServiceProvider

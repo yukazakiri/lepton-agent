@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Gateways;
+namespace Yukazakiri\Lepton\Gateways;
 
-use Eduflow\Lepton\Contracts\ArcNetworkGateway;
-use Eduflow\Lepton\Contracts\WalletGateway;
-use Eduflow\Lepton\Contracts\X402Gateway;
-use Eduflow\Lepton\DTOs\BalanceResult;
-use Eduflow\Lepton\DTOs\TransactionRecord;
-use Eduflow\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\X402Gateway;
+use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\TransactionRecord;
+use Yukazakiri\Lepton\DTOs\TransferResult;
 
 /**
  * In-memory driver for Pest tests and offline demo. No CLI, no chain.

@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Console\Commands;
+namespace Yukazakiri\Lepton\Console\Commands;
 
-use Eduflow\Lepton\LeptonManager;
+use Yukazakiri\Lepton\LeptonManager;
 use Illuminate\Console\Command;
 
 final class LeptonTransferCommand extends Command

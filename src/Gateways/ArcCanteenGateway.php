@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Gateways;
+namespace Yukazakiri\Lepton\Gateways;
 
-use Eduflow\Lepton\Contracts\ArcNetworkGateway;
-use Eduflow\Lepton\Support\CliRunner;
+use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Support\CliRunner;
 
 final class ArcCanteenGateway implements ArcNetworkGateway
 {

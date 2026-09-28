@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use Eduflow\Lepton\Gateways\FakeLeptonGateway;
-use Eduflow\Lepton\Support\Amounts;
+use Yukazakiri\Lepton\Gateways\FakeLeptonGateway;
+use Yukazakiri\Lepton\Support\Amounts;
 
 it('converts decimal strings to base units without floats', function (): void {
     expect(Amounts::fromDecimalString('100.00'))->toBe(100_000000)

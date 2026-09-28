@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Support;
+namespace Yukazakiri\Lepton\Support;
 
 use InvalidArgumentException;
 

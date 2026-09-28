@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\DTOs;
+namespace Yukazakiri\Lepton\DTOs;
 
 final readonly class BalanceResult
 {

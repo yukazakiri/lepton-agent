@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Eduflow\Lepton\Facades;
+namespace Yukazakiri\Lepton\Facades;
 
-use Eduflow\Lepton\DTOs\BalanceResult;
-use Eduflow\Lepton\DTOs\TransferResult;
-use Eduflow\Lepton\LeptonManager;
+use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\LeptonManager;
 use Illuminate\Support\Facades\Facade;
 
 /**

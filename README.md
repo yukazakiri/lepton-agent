@@ -13,14 +13,14 @@ composer require yukazakiri/lepton-agent
 `EduFlowAgent` and `CircleWalletService` should depend on contracts:
 
 ```php
-use Eduflow\Lepton\Contracts\WalletGateway;
-use Eduflow\Lepton\Support\Amounts;
+use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Support\Amounts;
 
 // 450.00 USDC -> 450_000000 base units, no floats
 $result = $wallets->transfer($from, $to, Amounts::fromDecimalString('450.00'));
 
 // or via facade
-use Eduflow\Lepton\Facades\Lepton;
+use Yukazakiri\Lepton\Facades\Lepton;
 Lepton::transferDecimal($from, $to, '450.00');
 ```
 
