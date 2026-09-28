@@ -94,6 +94,21 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
         return 'https://testnet.arcscan.app/tx/'.$txHash;
     }
 
+    public function addressExplorerUrl(string $address): string
+    {
+        return 'https://testnet.arcscan.app/address/'.$address;
+    }
+
+    public function rpc(string $method, array $params = []): mixed
+    {
+        return match ($method) {
+            'eth_chainId' => '0x'.dechex(5042002),
+            'eth_blockNumber' => '0x0',
+            'eth_getBalance' => '0x0',
+            default => null,
+        };
+    }
+
     public function searchServices(string $query): array
     {
         return [];

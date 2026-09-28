@@ -17,4 +17,14 @@ interface ArcNetworkGateway
     public function treasuryAddress(): ?string;
 
     public function explorerUrl(string $txHash): string;
+
+    public function addressExplorerUrl(string $address): string;
+
+    /**
+     * Generic JSON-RPC passthrough, for reads the Circle CLI does not cover
+     * (native Arc USDC balances, receipts, contract calls, ...).
+     *
+     * @param  array<int, mixed>  $params
+     */
+    public function rpc(string $method, array $params = []): mixed;
 }

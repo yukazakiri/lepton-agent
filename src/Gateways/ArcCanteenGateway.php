@@ -54,8 +54,38 @@ final class ArcCanteenGateway implements ArcNetworkGateway
 
     public function explorerUrl(string $txHash): string
     {
+        return rtrim($this->explorerBase(), '/').'/tx/'.$txHash;
+    }
+
+    public function addressExplorerUrl(string $address): string
+    {
+        return rtrim($this->explorerBase(), '/').'/address/'.$address;
+    }
+
+    public function rpc(string $method, array $params = []): mixed
+    {
+        $args = ['rpc', $method];
+
+        if ($params !== []) {
+            $args[] = json_encode($params, JSON_THROW_ON_ERROR);
+        }
+
+        $out = $this->arc->run($args, false);
+
+        if (! is_string($out) || trim($out) === '') {
+            return null;
+        }
+
+        $decoded = json_decode(trim($out), true);
+
+        return json_last_error() === JSON_ERROR_NONE ? $decoded : trim($out);
+    }
+
+    private function explorerBase(): string
+    {
         $base = $this->chainCode === 'ARC' ? $this->mainnetExplorer : $this->testnetExplorer;
 
-        return rtrim($base, '/').'/'.$txHash;
+        // Config historically stored a "/tx/" suffix; normalise either shape.
+        return rtrim(preg_replace('#/tx/?$#', '', $base) ?? $base, '/');
     }
 }
