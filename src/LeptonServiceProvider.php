@@ -30,7 +30,11 @@ final class LeptonServiceProvider extends ServiceProvider
             (int) config('lepton.arc.timeout', 60),
         ));
 
-        $this->app->scoped(FakeLeptonGateway::class, fn (): FakeLeptonGateway => new FakeLeptonGateway);
+        $this->app->scoped(FakeLeptonGateway::class, fn (): FakeLeptonGateway => new FakeLeptonGateway(
+            treasuryAddress: config('lepton.arc.treasury'),
+            chainCode: (string) config('lepton.arc.chain', 'ARC-TESTNET'),
+            chainId: (int) config('lepton.arc.chain_id', 5042002),
+        ));
 
         $this->app->scoped(ArcNetworkGateway::class, function (): ArcNetworkGateway {
             if ($this->driver() === 'fake') {

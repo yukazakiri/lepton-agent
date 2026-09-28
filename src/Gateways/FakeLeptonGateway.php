@@ -22,6 +22,24 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
     /** @var array<int, array<string,mixed>> */
     private array $transactions = [];
 
+    /** @var array<string,string> */
+    private array $rpcStubs = [];
+
+    public function __construct(
+        private readonly ?string $treasuryAddress = null,
+        private readonly string $chainCode = 'ARC-TESTNET',
+        private readonly int $chainId = 5042002,
+    ) {}
+
+    /**
+     * Seed a JSON-RPC return value so callers can exercise chain reads
+     * (eth_getBalance, receipts, ...) without a real node.
+     */
+    public function stubRpc(string $method, string $value): void
+    {
+        $this->rpcStubs[$method] = $value;
+    }
+
     public function seedBalance(string $address, int $amountBaseUnits): void
     {
         $this->ledger[strtolower($address)] = $amountBaseUnits;
@@ -71,12 +89,12 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
 
     public function chainCode(): string
     {
-        return 'ARC-TESTNET';
+        return $this->chainCode;
     }
 
     public function chainId(): int
     {
-        return 5042002;
+        return $this->chainId;
     }
 
     public function blockNumber(): string
@@ -86,7 +104,7 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
 
     public function treasuryAddress(): ?string
     {
-        return null;
+        return $this->treasuryAddress;
     }
 
     public function explorerUrl(string $txHash): string
@@ -101,8 +119,12 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
 
     public function rpc(string $method, array $params = []): mixed
     {
+        if (isset($this->rpcStubs[$method])) {
+            return $this->rpcStubs[$method];
+        }
+
         return match ($method) {
-            'eth_chainId' => '0x'.dechex(5042002),
+            'eth_chainId' => '0x'.dechex($this->chainId),
             'eth_blockNumber' => '0x0',
             'eth_getBalance' => '0x0',
             default => null,
