@@ -12,6 +12,7 @@ use Yukazakiri\Lepton\DTOs\TransactionRecord;
 use Yukazakiri\Lepton\DTOs\TransferResult;
 use Yukazakiri\Lepton\Support\Amounts;
 use Yukazakiri\Lepton\Support\CliRunner;
+use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 use Illuminate\Support\Str;
 
 final class CircleCliGateway implements WalletGateway, X402Gateway
@@ -47,9 +48,17 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
 
         /** @var array<string,mixed> $out */
         $out = $this->circle->runJson($args);
+        $payload = self::unwrap($out);
 
-        $txHash = $out['txHash'] ?? $out['transactionHash'] ?? $out['hash'] ?? $out['id'] ?? null;
-        $txHash = is_string($txHash) ? $txHash : (string) ($out['id'] ?? '');
+        // Never fall back to the UUID "id": a missing hash must surface as
+        // missing rather than be recorded as if it were a settlement receipt.
+        $txHash = $payload['txHash'] ?? $payload['transactionHash'] ?? $payload['hash'] ?? null;
+
+        if (! is_string($txHash) || $txHash === '') {
+            throw new LeptonRuntimeException(
+                'Circle CLI returned no tx hash for the transfer. Raw response: '.json_encode($out)
+            );
+        }
 
         return new TransferResult(
             txHash: $txHash,
@@ -61,6 +70,21 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
             explorerUrl: app(ArcNetworkGateway::class)->explorerUrl($txHash),
             raw: $out,
         );
+    }
+
+    /**
+     * Circle CLI wraps every successful payload in a top-level "data" key.
+     *
+     * @param  array<string,mixed>  $out
+     * @return array<string,mixed>
+     */
+    private static function unwrap(array $out): array
+    {
+        if (isset($out['data']) && is_array($out['data'])) {
+            return $out['data'];
+        }
+
+        return $out;
     }
 
     public function balance(string $address, array $options = []): BalanceResult
@@ -79,7 +103,7 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
         /** @var array<string,mixed> $out */
         $out = $this->circle->runJson($args);
 
-        $amountBaseUnits = $this->extractBalance($out);
+        $amountBaseUnits = $this->extractBalance(self::unwrap($out));
 
         return new BalanceResult($address, $amountBaseUnits, $chain, false, $out);
     }
@@ -100,7 +124,8 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
 
         /** @var array<string,mixed> $out */
         $out = $this->circle->runJson($args);
-        $rows = $out['transactions'] ?? $out['data'] ?? (array_is_list($out) ? $out : []);
+        $payload = self::unwrap($out);
+        $rows = $payload['transactions'] ?? (array_is_list($payload) ? $payload : []);
 
         $records = [];
         foreach ((array) $rows as $row) {
@@ -177,19 +202,44 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
     /**
      * @param  array<string,mixed>  $out
      */
-    private function extractBalance(array $out): int
+    /**
+     * @param  array<string,mixed>  $payload  Already unwrapped from the "data" envelope.
+     *
+     * Arc reports USDC twice: once as the 18-decimal native gas asset and once
+     * as the 6-decimal ERC20. Only rows whose precision matches the configured
+     * USDC scale are summed, otherwise the two units would be mixed.
+     */
+    private function extractBalance(array $payload): int
     {
-        foreach (['balance', 'amount', 'total'] as $key) {
-            if (isset($out[$key]) && is_numeric($out[$key])) {
-                return Amounts::fromDecimalString((string) $out[$key], $this->usdcDecimals);
+        $rows = $payload['balances'] ?? (array_is_list($payload) ? $payload : []);
+
+        $total = 0;
+        $matched = false;
+
+        foreach ($rows as $row) {
+            if (! is_array($row) || ! isset($row['amount']) || ! is_numeric($row['amount'])) {
+                continue;
             }
+
+            $token = is_array($row['token'] ?? null) ? $row['token'] : [];
+            $decimals = isset($token['decimals']) ? (int) $token['decimals'] : $this->usdcDecimals;
+
+            if ($decimals !== $this->usdcDecimals) {
+                continue;
+            }
+
+            $total += Amounts::fromDecimalString((string) $row['amount'], $decimals);
+            $matched = true;
         }
-        foreach ($out as $row) {
-            if (is_array($row) && isset($row['amount']) && is_numeric($row['amount'])) {
-                return Amounts::fromDecimalString((string) $row['amount'], $this->usdcDecimals);
-            }
-            if (is_array($row) && isset($row['balance']) && is_numeric($row['balance'])) {
-                return Amounts::fromDecimalString((string) $row['balance'], $this->usdcDecimals);
+
+        if ($matched) {
+            return $total;
+        }
+
+        // Single-scale response, or an unfamiliar shape: fall back to a scalar field.
+        foreach (['balance', 'amount', 'total'] as $key) {
+            if (isset($payload[$key]) && is_numeric($payload[$key])) {
+                return Amounts::fromDecimalString((string) $payload[$key], $this->usdcDecimals);
             }
         }
 
