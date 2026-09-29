@@ -20,12 +20,7 @@ use Yukazakiri\Lepton\Contracts\AuthGateway;
  */
 final class LeptonAuthCommand extends Command
 {
-    protected $signature = 'lepton:login
-        {email? : Email address for authentication}
-        {--request= : Resume a login started earlier by request ID}
-        {--otp= : One-time code from the Circle email, e.g. B1X-123456}
-        {--testnet : Target the testnet session instead of mainnet}
-        {--status : Show current session state and exit}';
+    protected $signature = 'lepton:login {email? : Email address for authentication} {--request= : Resume a login started earlier by request ID} {--otp= : One-time code from the Circle email, e.g. B1X-123456} {--testnet : Target the testnet session instead of mainnet} {--status : Show current session state and exit}';
 
     protected $description = 'Authenticate a Circle agent wallet, or show the current session state.';
 
