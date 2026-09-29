@@ -33,11 +33,12 @@ final class CliRunner
      * Run binary with argv, never via shell string.
      *
      * @param  array<int,string>  $args
+     * @param  array<string,string>  $env  Extra environment for this process only.
      * @return array<string,mixed>|string
      */
-    public function run(array $args, bool $expectJson = true): array|string
+    public function run(array $args, bool $expectJson = true, array $env = []): array|string
     {
-        $process = new Process(array_merge([$this->binary], $args));
+        $process = new Process(array_merge([$this->binary], $args), null, $env === [] ? null : $env);
         $process->setTimeout($this->timeout);
         $process->run();
 
@@ -70,14 +71,15 @@ final class CliRunner
 
     /**
      * @param  array<int,string>  $args
+     * @param  array<string,string>  $env
      * @return array<string,mixed>|string
      */
-    public function runJson(array $args): array|string
+    public function runJson(array $args, array $env = []): array|string
     {
         if (! in_array('--output', $args, true)) {
             $args = array_merge($args, ['--output', 'json']);
         }
 
-        return $this->run($args, true);
+        return $this->run($args, true, $env);
     }
 }

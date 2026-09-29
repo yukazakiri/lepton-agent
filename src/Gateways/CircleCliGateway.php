@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Yukazakiri\Lepton\Gateways;
 
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
@@ -15,7 +16,7 @@ use Yukazakiri\Lepton\Support\CliRunner;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 use Illuminate\Support\Str;
 
-final class CircleCliGateway implements WalletGateway, X402Gateway
+final class CircleCliGateway implements WalletGateway, X402Gateway, AuthGateway
 {
     public function __construct(
         private readonly CliRunner $circle,
@@ -244,5 +245,74 @@ final class CircleCliGateway implements WalletGateway, X402Gateway
         }
 
         return 0;
+    }
+
+    public function authStatus(): array
+    {
+        $empty = ['authenticated' => false, 'email' => null, 'status' => null, 'expires_in' => null];
+
+        $out = $this->circle->runJson(['wallet', 'status', '--type', 'agent']);
+        $payload = self::unwrap($out);
+
+        $read = function (?array $section) use ($empty): array {
+            if ($section === null) {
+                return $empty;
+            }
+
+            $status = isset($section['tokenStatus']) ? (string) $section['tokenStatus'] : null;
+
+            return [
+                'authenticated' => strtoupper((string) $status) === 'VALID',
+                'email' => isset($section['email']) ? (string) $section['email'] : null,
+                'status' => $status,
+                'expires_in' => isset($section['expiresIn']) ? (string) $section['expiresIn'] : null,
+            ];
+        };
+
+        return [
+            'type' => (string) ($payload['type'] ?? 'agent'),
+            'mainnet' => $read(is_array($payload['mainnet'] ?? null) ? $payload['mainnet'] : null),
+            'testnet' => $read(is_array($payload['testnet'] ?? null) ? $payload['testnet'] : null),
+        ];
+    }
+
+    public function beginLogin(string $email): string
+    {
+        // CIRCLE_ACCEPT_TERMS stops the CLI pausing for the Terms of Use on a
+        // first run, which would otherwise block a non-interactive caller.
+        $out = $this->circle->runJson(
+            ['wallet', 'login', $email, '--init'],
+            ['CIRCLE_ACCEPT_TERMS' => '1'],
+        );
+        $payload = self::unwrap($out);
+
+        $requestId = $payload['requestId'] ?? $payload['request_id'] ?? $payload['id'] ?? null;
+
+        if (! is_string($requestId) || $requestId === '') {
+            throw new LeptonRuntimeException(
+                'Circle CLI did not return a login request ID. Raw response: '.json_encode($out)
+            );
+        }
+
+        return $requestId;
+    }
+
+    public function completeLogin(string $requestId, string $otp): array
+    {
+        $out = $this->circle->runJson(['wallet', 'login', '--request', $requestId, '--otp', $otp]);
+        $payload = self::unwrap($out);
+
+        return [
+            'email' => isset($payload['email']) ? (string) $payload['email'] : null,
+            'status' => isset($payload['status']) ? (string) $payload['status'] : 'VALID',
+        ];
+    }
+
+    public function isAuthenticatedFor(string $chainCode = 'ARC-TESTNET'): bool
+    {
+        $status = $this->authStatus();
+        $key = str_contains(strtoupper($chainCode), 'TESTNET') ? 'testnet' : 'mainnet';
+
+        return $status[$key]['authenticated'] === true;
     }
 }

@@ -5,16 +5,18 @@ declare(strict_types=1);
 namespace Yukazakiri\Lepton\Gateways;
 
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
 use Yukazakiri\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 
 /**
  * In-memory driver for Pest tests and offline demo. No CLI, no chain.
  */
-final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402Gateway
+final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402Gateway, AuthGateway
 {
     /** @var array<string,int> */
     private array $ledger = [];
@@ -25,11 +27,25 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
     /** @var array<string,string> */
     private array $rpcStubs = [];
 
+    private bool $authenticated = false;
+
+    private ?string $pendingRequestId = null;
+
     public function __construct(
         private readonly ?string $treasuryAddress = null,
         private readonly string $chainCode = 'ARC-TESTNET',
         private readonly int $chainId = 5042002,
     ) {}
+
+    /**
+     * Pretend a valid session exists, so tests can exercise authenticated paths.
+     */
+    public function fakeAuthenticated(bool $authenticated = true): self
+    {
+        $this->authenticated = $authenticated;
+
+        return $this;
+    }
 
     /**
      * Seed a JSON-RPC return value so callers can exercise chain reads
@@ -129,6 +145,47 @@ final class FakeLeptonGateway implements ArcNetworkGateway, WalletGateway, X402G
             'eth_getBalance' => '0x0',
             default => null,
         };
+    }
+
+    public function authStatus(): array
+    {
+        $section = fn (): array => $this->authenticated
+            ? ['authenticated' => true, 'email' => 'agent@example.test', 'status' => 'VALID', 'expires_in' => '7d 0h 0m']
+            : ['authenticated' => false, 'email' => null, 'status' => 'NOT_LOGGED_IN', 'expires_in' => null];
+
+        return [
+            'type' => 'agent',
+            'mainnet' => $section(),
+            'testnet' => $section(),
+        ];
+    }
+
+    public function beginLogin(string $email): string
+    {
+        $this->pendingRequestId = 'fake-request-'.substr(hash('sha256', $email), 0, 8);
+
+        return $this->pendingRequestId;
+    }
+
+    public function completeLogin(string $requestId, string $otp): array
+    {
+        if ($this->pendingRequestId === null || $requestId !== $this->pendingRequestId) {
+            throw new LeptonRuntimeException('Unknown or already-consumed login request ID.');
+        }
+
+        if (! preg_match('/^[A-Z0-9]{3}-\d{6}$/i', $otp)) {
+            throw new LeptonRuntimeException('Malformed OTP. Expected the form B1X-123456.');
+        }
+
+        $this->pendingRequestId = null;
+        $this->authenticated = true;
+
+        return ['email' => 'agent@example.test', 'status' => 'VALID'];
+    }
+
+    public function isAuthenticatedFor(string $chainCode = 'ARC-TESTNET'): bool
+    {
+        return $this->authenticated;
     }
 
     public function searchServices(string $query): array
