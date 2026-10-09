@@ -29,13 +29,15 @@ Built for the [Lepton Agents Hackathon](https://arc-node.thecanteenapp.com/).
 
 ---
 
-## Requirements
+## Requirements & Prerequisites
 
-- PHP 8.3+, Laravel 12 or 13
-- **Node.js 20.18.2+**
+- PHP 8.3+, Laravel 12 or 13 (extensions: `openssl`, `mbstring`, `curl`)
+- [Node.js](https://nodejs.org/en/download) **20.18.2+**
 - [Circle CLI](https://developers.circle.com/agent-stack/circle-cli):
   `npm install -g @circle-fin/cli`
-- `arc-canteen` (optional, for testnet RPC and a funded testnet wallet):
+- [Astral uv](https://docs.astral.sh/uv/):
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [`arc-canteen`](https://arc-node.thecanteenapp.com/) (optional, for testnet RPC and a funded testnet wallet):
   `uv tool install arc-canteen && arc-canteen login`
 
 > **The package does not store credentials.** Circle CLI owns the agent session;
