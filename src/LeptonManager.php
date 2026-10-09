@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton;
 
+use InvalidArgumentException;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
+use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransferResult;
 use Yukazakiri\Lepton\Support\Amounts;
-use InvalidArgumentException;
+use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 
 final class LeptonManager
 {
@@ -20,6 +22,7 @@ final class LeptonManager
         private readonly ArcNetworkGateway $arc,
         private readonly X402Gateway $x402,
         private readonly AuthGateway $auth,
+        private readonly ?CircleGateway $circle = null,
     ) {}
 
     public function wallets(): WalletGateway
@@ -30,6 +33,68 @@ final class LeptonManager
     public function auth(): AuthGateway
     {
         return $this->auth;
+    }
+
+    public function circle(): CircleGateway
+    {
+        if ($this->circle !== null) {
+            return $this->circle;
+        }
+
+        if ($this->wallets instanceof CircleGateway) {
+            return $this->wallets;
+        }
+
+        return app(CircleGateway::class);
+    }
+
+    /**
+     * Run any Circle CLI command via the configured runner.
+     *
+     * @param  array<int,string>  $args
+     * @param  array<string,mixed>  $options
+     * @return array<string,mixed>|string
+     */
+    public function runCircle(array $args, bool $json = true, array $options = []): array|string
+    {
+        if (! config('lepton.allow_raw_commands', false) && empty($options['force'])) {
+            throw new LeptonRuntimeException('Raw Circle CLI commands are disabled. Set LEPTON_ALLOW_RAW_CIRCLE=true to allow execution.');
+        }
+
+        return $this->circle()->run($args, $json, $options);
+    }
+
+    /**
+     * List wallets on chain.
+     *
+     * @param  array<string,mixed>  $options
+     * @return array<int,array<string,mixed>>
+     */
+    public function listWallets(array $options = []): array
+    {
+        return $this->circle()->wallets($options);
+    }
+
+    /**
+     * Create agent-controlled SCA wallets on supported chains.
+     *
+     * @param  array<string,mixed>  $options
+     * @return array<string,mixed>
+     */
+    public function createWallet(array $options = []): array
+    {
+        return $this->circle()->createWallet($options);
+    }
+
+    /**
+     * Fund a wallet (faucet on testnet, Transak on mainnet).
+     *
+     * @param  array<string,mixed>  $options
+     * @return array<string,mixed>
+     */
+    public function fundWallet(string $address, array $options = []): array
+    {
+        return $this->circle()->fundWallet($address, $options);
     }
 
     /**

@@ -12,6 +12,7 @@ Resolve these from the container. Never shell out yourself.
 - `ArcNetworkGateway` — `rpc()`, `blockNumber()`, `chainId()`, `rpcUrl()`, `treasuryAddress()`, `explorerUrl()`, `addressExplorerUrl()`
 - `AuthGateway` — `authStatus()`, `beginLogin()`, `completeLogin()`, `isAuthenticatedFor()`
 - `X402Gateway` — `searchServices()`, `inspectService()`, `payService()`, `gatewayBalance()`
+- `CircleGateway` — `run()`, `wallets()`, `createWallet()`, `fundWallet()`, `signMessage()`, `signTypedData()`, `execute()`, `gatewayDeposit()`, `gatewayWithdraw()`, `bridgeTransfer()`, `bridgeStatus()`, `bridgeFee()`, `contractAddress()`, `contractQuery()`, `blockchains()`
 
 The `Lepton` facade exposes `transfer`, `transferDecimal`, `balance`, `status`,
 `authStatus`, `isAuthenticated`, and accessors for each gateway.
@@ -148,8 +149,8 @@ than relying on a shared instance.
 
 ### Commands
 
-This package registers `lepton:login` (and `--status`), `lepton:status` and
-`lepton:transfer`.
+This package registers `lepton:login` (and `--status`), `lepton:status`,
+`lepton:transfer` and `lepton:circle`.
 
 Applications built on this package often add their own diagnostics — for example a
 doctor command that checks binaries, session state and the treasury address. Check the
@@ -158,7 +159,9 @@ application's `artisan list` before assuming such a command exists.
 ### CLI coverage
 
 Wrapped: `wallet transfer`, `wallet balance`, `wallet limit`, `wallet status`,
-`wallet login`, `transaction list`, `services *`, `gateway balance`, JSON-RPC reads.
-Not wrapped: `wallet create`, `fund`, `sign`, `swap`, `execute`, `import`, `bridge`,
-`contract`, `earn`, `blockchain config`. Run those through the Circle CLI directly
+`wallet login`, `wallet create`, `wallet fund`, `wallet sign`, `wallet execute`,
+`gateway deposit`, `gateway withdraw`, `bridge transfer`, `bridge status`,
+`bridge get-fee`, `contract address`, `contract query`, `blockchain list`,
+`transaction list`, `services *`, `gateway balance`, JSON-RPC reads, arbitrary execution via `lepton:circle` or `CircleGateway::run()`.
+Not wrapped: `wallet import`, `swap`, `earn`. Run those through the Circle CLI directly
 rather than assuming the package covers them.

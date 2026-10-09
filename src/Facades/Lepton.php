@@ -4,14 +4,15 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton\Facades;
 
+use Illuminate\Support\Facades\Facade;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
+use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransferResult;
 use Yukazakiri\Lepton\LeptonManager;
-use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static TransferResult transfer(string $from, string $to, int $amountBaseUnits, array $options = [])
@@ -24,6 +25,11 @@ use Illuminate\Support\Facades\Facade;
  * @method static ArcNetworkGateway arc()
  * @method static X402Gateway services()
  * @method static AuthGateway auth()
+ * @method static CircleGateway circle()
+ * @method static array|string runCircle(array $args, bool $json = true, array $options = [])
+ * @method static array listWallets(array $options = [])
+ * @method static array createWallet(array $options = [])
+ * @method static array fundWallet(string $address, array $options = [])
  *
  * @see LeptonManager
  */

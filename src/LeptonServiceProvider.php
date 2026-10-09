@@ -4,15 +4,16 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton;
 
+use Illuminate\Support\ServiceProvider;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
+use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\Gateways\ArcCanteenGateway;
 use Yukazakiri\Lepton\Gateways\CircleCliGateway;
 use Yukazakiri\Lepton\Gateways\FakeLeptonGateway;
 use Yukazakiri\Lepton\Support\CliRunner;
-use Illuminate\Support\ServiceProvider;
 
 final class LeptonServiceProvider extends ServiceProvider
 {
@@ -71,7 +72,7 @@ final class LeptonServiceProvider extends ServiceProvider
                 return $this->app->make(FakeLeptonGateway::class);
             }
 
-            // Circle CLI handles both wallet + x402, reuse same runner.
+            // Circle CLI handles wallet + x402 + circle, reuse same runner.
             return $this->app->make(WalletGateway::class) instanceof X402Gateway
                 ? $this->app->make(WalletGateway::class)
                 : new CircleCliGateway($this->app->make(CliRunner::class.'circle'));
@@ -87,11 +88,22 @@ final class LeptonServiceProvider extends ServiceProvider
                 : new CircleCliGateway($this->app->make(CliRunner::class.'circle'));
         });
 
+        $this->app->scoped(CircleGateway::class, function (): CircleGateway {
+            if ($this->driver() === 'fake') {
+                return $this->app->make(FakeLeptonGateway::class);
+            }
+
+            return $this->app->make(WalletGateway::class) instanceof CircleGateway
+                ? $this->app->make(WalletGateway::class)
+                : new CircleCliGateway($this->app->make(CliRunner::class.'circle'));
+        });
+
         $this->app->scoped(LeptonManager::class, fn (): LeptonManager => new LeptonManager(
             $this->app->make(WalletGateway::class),
             $this->app->make(ArcNetworkGateway::class),
             $this->app->make(X402Gateway::class),
             $this->app->make(AuthGateway::class),
+            $this->app->make(CircleGateway::class),
         ));
 
         $this->app->alias(LeptonManager::class, 'lepton');
@@ -106,6 +118,7 @@ final class LeptonServiceProvider extends ServiceProvider
                 Console\Commands\LeptonStatusCommand::class,
                 Console\Commands\LeptonTransferCommand::class,
                 Console\Commands\LeptonAuthCommand::class,
+                Console\Commands\LeptonCircleCommand::class,
             ]);
         }
     }

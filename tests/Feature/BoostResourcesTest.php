@@ -114,6 +114,7 @@ it('only documents methods that exist on the contracts it names', function (): v
         'ArcNetworkGateway' => ['path' => 'Contracts/ArcNetworkGateway.php', 'methods' => ['rpc', 'blockNumber', 'chainId', 'rpcUrl', 'treasuryAddress', 'explorerUrl', 'addressExplorerUrl']],
         'AuthGateway' => ['path' => 'Contracts/AuthGateway.php', 'methods' => ['authStatus', 'beginLogin', 'completeLogin', 'isAuthenticatedFor']],
         'X402Gateway' => ['path' => 'Contracts/X402Gateway.php', 'methods' => ['searchServices', 'inspectService', 'payService', 'gatewayBalance']],
+        'CircleGateway' => ['path' => 'Contracts/CircleGateway.php', 'methods' => ['run', 'wallets', 'createWallet', 'fundWallet', 'signMessage', 'signTypedData', 'execute', 'gatewayDeposit', 'gatewayWithdraw', 'bridgeTransfer', 'bridgeStatus', 'bridgeFee', 'contractAddress', 'contractQuery', 'blockchains']],
         'Amounts' => ['path' => 'Support/Amounts.php', 'methods' => ['fromDecimalString', 'toDecimalString', 'toCliAmount', 'fromHexQuantity']],
     ];
 
@@ -132,7 +133,7 @@ it('only documents methods that exist on the contracts it names', function (): v
     expect($missing)->toBe([], 'Boost resources advertise methods that do not exist: '.implode(', ', $missing));
 
     // And they must actually mention the contracts they claim to describe.
-    foreach (['WalletGateway', 'ArcNetworkGateway', 'AuthGateway', 'X402Gateway', 'Amounts'] as $class) {
+    foreach (['WalletGateway', 'ArcNetworkGateway', 'AuthGateway', 'X402Gateway', 'CircleGateway', 'Amounts'] as $class) {
         expect($text)->toContain($class);
     }
 });

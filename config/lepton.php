@@ -33,6 +33,9 @@ return [
     // When true, transfers are validated but never broadcast (adds --estimate).
     'dry_run' => (bool) env('LEPTON_DRY_RUN', false),
 
+    // When false, raw circle commands via lepton:circle or runCircle() are blocked.
+    'allow_raw_commands' => (bool) env('LEPTON_ALLOW_RAW_CIRCLE', false),
+
     'explorer' => [
         'testnet' => env('LEPTON_EXPLORER_TESTNET', 'https://testnet.arcscan.app/tx/'),
         'mainnet' => env('LEPTON_EXPLORER_MAINNET', 'https://arcscan.app/tx/'),

@@ -40,7 +40,6 @@ interface AuthGateway
      * Complete a login started by beginLogin().
      *
      * @param  string  $otp  Alphanumeric code from Circle's email, e.g. "B1X-123456".
-     *
      * @return array{email: ?string, status: ?string}
      */
     public function completeLogin(string $requestId, string $otp): array;

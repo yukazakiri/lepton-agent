@@ -11,11 +11,9 @@ Use it when working with `yukazakiri/lepton-agent`: moving USDC, reading Arc cha
 state, authenticating a Circle agent wallet, paying x402 services, or writing tests
 that must not touch a chain.
 
-## The four gateways
+## The five gateways
 
-Everything goes through a contract resolved from the container. There is deliberately
-no generic `run()` passthrough, so there is never a reason to shell out to `circle`
-yourself.
+Everything goes through a contract resolved from the container:
 
 | Contract | Purpose |
 |---|---|
@@ -23,6 +21,7 @@ yourself.
 | `ArcNetworkGateway` | `rpc`, `blockNumber`, `chainId`, `rpcUrl`, `treasuryAddress`, `explorerUrl`, `addressExplorerUrl` |
 | `AuthGateway` | `authStatus`, `beginLogin`, `completeLogin`, `isAuthenticatedFor` |
 | `X402Gateway` | `searchServices`, `inspectService`, `payService`, `gatewayBalance` |
+| `CircleGateway` | `run`, `wallets`, `createWallet`, `fundWallet`, `signMessage`, `signTypedData`, `execute`, `gatewayDeposit`, `gatewayWithdraw`, `bridgeTransfer`, `bridgeStatus`, `bridgeFee`, `contractAddress`, `contractQuery`, `blockchains` |
 
 ```php
 use Yukazakiri\Lepton\Contracts\WalletGateway;
@@ -210,6 +209,5 @@ property or a singleton.
 
 ## What the package does not wrap
 
-`wallet create`, `fund`, `sign`, `swap`, `execute`, `import`, `bridge`, `contract`,
-`earn`, `blockchain config`. Run those through the Circle CLI directly; do not assume
+`wallet import`, `swap`, `earn`. Run those through the Circle CLI directly; do not assume
 a gateway method exists because the CLI verb does.

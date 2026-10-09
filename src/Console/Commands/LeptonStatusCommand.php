@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton\Console\Commands;
 
-use Yukazakiri\Lepton\LeptonManager;
 use Illuminate\Console\Command;
+use Yukazakiri\Lepton\LeptonManager;
 
 final class LeptonStatusCommand extends Command
 {

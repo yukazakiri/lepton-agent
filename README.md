@@ -18,6 +18,7 @@ Built for the [Lepton Agents Hackathon](https://arc-node.thecanteenapp.com/).
 - [Reading the chain](#reading-the-chain)
 - [Spending limits](#spending-limits)
 - [x402 paid services](#x402-paid-services)
+- [Circle CLI operations](#circle-cli-operations)
 - [CLI coverage](#cli-coverage)
 - [Configuration](#configuration)
 - [Commands](#commands)
@@ -305,9 +306,48 @@ $services->gatewayBalance('0xPayer');
 
 ---
 
+## Circle CLI operations
+
+Directly interact with Circle CLI primitives using `CircleGateway`:
+
+```php
+use Yukazakiri\Lepton\Contracts\CircleGateway;
+
+$circle = app(CircleGateway::class);
+
+// Wallets & lifecycle
+$wallets = $circle->wallets(['chain' => 'ARC-TESTNET', 'type' => 'agent']);
+$newWallet = $circle->createWallet(['testnet' => true]);
+$funded = $circle->fundWallet('0xRecipient', ['chain' => 'ARC-TESTNET']);
+
+// Signing & execution
+$signedMsg = $circle->signMessage('0xTreasury', 'hello');
+$signedTyped = $circle->signTypedData('0xTreasury', '{"types":{}}');
+$tx = $circle->execute('0xTreasury', '0xContract', 'transfer(address,uint256)', ['0xTo', '100']);
+
+// Gateway nanopayments
+$circle->gatewayDeposit('0xTreasury', '5.0', ['method' => 'eco']);
+$circle->gatewayWithdraw('0xTreasury', '5.0');
+
+// CCTP Bridge
+$fee = $circle->bridgeFee('ARC-TESTNET', 'BASE');
+$bridge = $circle->bridgeTransfer('0xTreasury', 'BASE', '10.0');
+$status = $circle->bridgeStatus($bridge['burnTxHash']);
+
+// Contracts & blockchains
+$contracts = $circle->contractAddress('USDC');
+$query = $circle->contractQuery('0xContract', 'balanceOf(address)', ['0xTreasury']);
+$blockchains = $circle->blockchains();
+
+// Arbitrary execution (guarded by LEPTON_ALLOW_RAW_CIRCLE)
+$raw = $circle->run(['blockchain', 'list']);
+```
+
+---
+
 ## CLI coverage
 
-This package wraps a focused subset. Anything not listed runs through the Circle CLI
+This package wraps a comprehensive subset. Anything not listed runs through the Circle CLI
 directly.
 
 | CLI verb | Package |
@@ -317,12 +357,21 @@ directly.
 | `wallet limit` | `WalletGateway::limits()` |
 | `wallet status` | `AuthGateway::authStatus()` |
 | `wallet login` | `AuthGateway::beginLogin()` / `completeLogin()` |
+| `wallet list` | `CircleGateway::wallets()` / `Lepton::listWallets()` |
+| `wallet create` | `CircleGateway::createWallet()` / `Lepton::createWallet()` |
+| `wallet fund` | `CircleGateway::fundWallet()` / `Lepton::fundWallet()` |
+| `wallet sign message` / `typed-data` | `CircleGateway::signMessage()` / `signTypedData()` |
+| `wallet execute` | `CircleGateway::execute()` |
+| `gateway deposit` / `withdraw` | `CircleGateway::gatewayDeposit()` / `gatewayWithdraw()` |
+| `bridge transfer` / `status` / `get-fee` | `CircleGateway::bridgeTransfer()` / `bridgeStatus()` / `bridgeFee()` |
+| `contract address` / `query` | `CircleGateway::contractAddress()` / `contractQuery()` |
+| `blockchain list` | `CircleGateway::blockchains()` |
 | `transaction list` | `WalletGateway::transactions()` |
 | `services search` / `inspect` / `pay` | `X402Gateway` |
 | `gateway balance` | `X402Gateway::gatewayBalance()` |
 | JSON-RPC reads | `ArcNetworkGateway::rpc()` |
-| `wallet create`, `fund`, `import`, `sign`, `swap`, `execute` | *not wrapped — use the CLI* |
-| `bridge`, `contract`, `earn`, `blockchain config` | *not wrapped — use the CLI* |
+| raw commands | `CircleGateway::run()` / `Lepton::runCircle()` / `lepton:circle` |
+| `wallet import`, `swap`, `earn` | *not wrapped — use the CLI directly* |
 
 ---
 
@@ -344,6 +393,9 @@ LEPTON_RPC_URL=
 
 # Validate transfers without broadcasting (adds --estimate)
 LEPTON_DRY_RUN=false
+
+# Allow raw circle commands via lepton:circle or Lepton::runCircle()
+LEPTON_ALLOW_RAW_CIRCLE=false
 ```
 
 `LEPTON_DRIVER` defaults to `fake` when `APP_ENV=testing`.
@@ -360,6 +412,8 @@ php artisan lepton:login --request=<id> --otp=B1X-123456    # complete login
 php artisan lepton:status --address=0xTreasury             # chain, block, balance, limits
 php artisan lepton:transfer 0xRecipient --amount=1.00 --from=0xTreasury
 php artisan lepton:transfer 0xRecipient --amount=1.00 --from=0xTreasury --estimate
+
+php artisan lepton:circle blockchain list                  # run Circle CLI command (requires LEPTON_ALLOW_RAW_CIRCLE=true)
 ```
 
 ---

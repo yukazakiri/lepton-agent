@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
+use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
-use Yukazakiri\Lepton\Support\Amounts;
 
 /** tests/Feature -> tests -> package root */
 function packageRoot(): string
@@ -86,6 +86,7 @@ it('documents every contract method it advertises', function (): void {
         WalletGateway::class => ['transfer', 'balance', 'transactions', 'limits'],
         ArcNetworkGateway::class => ['rpc', 'blockNumber', 'explorerUrl', 'addressExplorerUrl', 'chainId', 'chainCode', 'rpcUrl', 'treasuryAddress'],
         X402Gateway::class => ['searchServices', 'inspectService', 'payService', 'gatewayBalance'],
+        CircleGateway::class => ['run', 'wallets', 'createWallet', 'fundWallet', 'signMessage', 'signTypedData', 'execute', 'gatewayDeposit', 'gatewayWithdraw', 'bridgeTransfer', 'bridgeStatus', 'bridgeFee', 'contractAddress', 'contractQuery', 'blockchains'],
     ];
 
     foreach ($expectations as $interface => $methods) {

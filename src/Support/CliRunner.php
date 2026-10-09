@@ -22,7 +22,7 @@ final class LeptonCliException extends RuntimeException
     }
 }
 
-final class CliRunner
+class CliRunner
 {
     public function __construct(
         private readonly string $binary,
