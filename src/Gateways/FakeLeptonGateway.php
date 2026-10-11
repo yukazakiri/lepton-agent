@@ -11,6 +11,7 @@ use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
+use Yukazakiri\Lepton\DTOs\TransferResolution;
 use Yukazakiri\Lepton\DTOs\TransferResult;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 
@@ -24,6 +25,9 @@ final class FakeLeptonGateway implements ArcNetworkGateway, AuthGateway, CircleG
 
     /** @var array<int, array<string,mixed>> */
     private array $transactions = [];
+
+    /** @var array<string, array<string, mixed>> */
+    private array $resolutions = [];
 
     /** @var array<string,string> */
     private array $rpcStubs = [];
@@ -106,7 +110,20 @@ final class FakeLeptonGateway implements ArcNetworkGateway, AuthGateway, CircleG
         $txHash = '0x'.bin2hex(random_bytes(32));
         $this->transactions[] = ['id' => $txHash, 'txHash' => $txHash, 'state' => 'confirmed'];
 
-        return new TransferResult($txHash, $fromAddress, $toAddress, $amountBaseUnits, $chain, true, 'https://testnet.arcscan.app/tx/'.$txHash, ['fake' => true]);
+        $this->resolutions[$txHash] = ['id' => $txHash, 'txHash' => $txHash, 'state' => 'complete'];
+
+        return new TransferResult($txHash, $fromAddress, $toAddress, $amountBaseUnits, $chain, true, 'https://testnet.arcscan.app/tx/'.$txHash, ['fake' => true], $txHash, 'submitted');
+    }
+
+    public function resolve(string $handle, array $options = []): TransferResolution
+    {
+        $record = $this->resolutions[$handle] ?? null;
+
+        if ($record === null) {
+            return TransferResolution::unknown('No fake transfer carries this handle.', $handle);
+        }
+
+        return TransferResolution::completed((string) $record['txHash'], $handle, $record);
     }
 
     public function balance(string $address, array $options = []): BalanceResult
