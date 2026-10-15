@@ -12,6 +12,7 @@ use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\Gateways\ArcCanteenGateway;
 use Yukazakiri\Lepton\Gateways\CircleCliGateway;
+use Yukazakiri\Lepton\Gateways\CircleRestGateway;
 use Yukazakiri\Lepton\Gateways\FakeLeptonGateway;
 use Yukazakiri\Lepton\Support\CliRunner;
 
@@ -38,6 +39,16 @@ final class LeptonServiceProvider extends ServiceProvider
             chainId: (int) config('lepton.arc.chain_id', 5042002),
         ));
 
+        $this->app->scoped(CircleRestGateway::class, fn (): CircleRestGateway => new CircleRestGateway(
+            apiKey: config('lepton.developer.api_key'),
+            entitySecret: config('lepton.developer.entity_secret'),
+            walletSetId: config('lepton.developer.wallet_set_id'),
+            baseUrl: (string) config('lepton.developer.base_url', CircleRestGateway::DEFAULT_BASE_URL),
+            usdcDecimals: (int) config('lepton.usdc_decimals', 6),
+            dryRun: (bool) config('lepton.dry_run', false),
+            defaultRpcUrl: config('lepton.arc.rpc_url'),
+        ));
+
         $this->app->scoped(ArcNetworkGateway::class, function (): ArcNetworkGateway {
             if ($this->driver() === 'fake') {
                 return $this->app->make(FakeLeptonGateway::class);
@@ -59,6 +70,10 @@ final class LeptonServiceProvider extends ServiceProvider
                 return $this->app->make(FakeLeptonGateway::class);
             }
 
+            if (in_array($this->driver(), ['developer', 'circle-rest'], true)) {
+                return $this->app->make(CircleRestGateway::class);
+            }
+
             return new CircleCliGateway(
                 circle: $this->app->make(CliRunner::class.'circle'),
                 usdcDecimals: (int) config('lepton.usdc_decimals', 6),
@@ -72,6 +87,10 @@ final class LeptonServiceProvider extends ServiceProvider
                 return $this->app->make(FakeLeptonGateway::class);
             }
 
+            if (in_array($this->driver(), ['developer', 'circle-rest'], true)) {
+                return $this->app->make(CircleRestGateway::class);
+            }
+
             // Circle CLI handles wallet + x402 + circle, reuse same runner.
             return $this->app->make(WalletGateway::class) instanceof X402Gateway
                 ? $this->app->make(WalletGateway::class)
@@ -83,6 +102,10 @@ final class LeptonServiceProvider extends ServiceProvider
                 return $this->app->make(FakeLeptonGateway::class);
             }
 
+            if (in_array($this->driver(), ['developer', 'circle-rest'], true)) {
+                return $this->app->make(CircleRestGateway::class);
+            }
+
             return $this->app->make(WalletGateway::class) instanceof AuthGateway
                 ? $this->app->make(WalletGateway::class)
                 : new CircleCliGateway($this->app->make(CliRunner::class.'circle'));
@@ -91,6 +114,10 @@ final class LeptonServiceProvider extends ServiceProvider
         $this->app->scoped(CircleGateway::class, function (): CircleGateway {
             if ($this->driver() === 'fake') {
                 return $this->app->make(FakeLeptonGateway::class);
+            }
+
+            if (in_array($this->driver(), ['developer', 'circle-rest'], true)) {
+                return $this->app->make(CircleRestGateway::class);
             }
 
             return $this->app->make(WalletGateway::class) instanceof CircleGateway
@@ -131,6 +158,6 @@ final class LeptonServiceProvider extends ServiceProvider
     {
         $driver = (string) config('lepton.default', 'circle');
 
-        return in_array($driver, ['circle', 'fake'], true) ? $driver : 'circle';
+        return in_array($driver, ['circle', 'developer', 'circle-rest', 'fake'], true) ? $driver : 'circle';
     }
 }

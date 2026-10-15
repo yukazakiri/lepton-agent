@@ -380,12 +380,18 @@ directly.
 ## Configuration
 
 ```env
-# circle = real Circle CLI + arc-canteen, fake = in-memory ledger
+# circle = real Circle CLI (agent stack), developer / circle-rest = pure HTTP REST API, fake = in-memory ledger
 LEPTON_DRIVER=circle
 LEPTON_CIRCLE_BIN=circle
 LEPTON_ARC_BIN=arc-canteen
 LEPTON_CHAIN=ARC-TESTNET
 LEPTON_CHAIN_ID=5042002
+
+# For LEPTON_DRIVER=developer or circle-rest (Circle Developer-Controlled Wallets API):
+LEPTON_CIRCLE_API_KEY=
+LEPTON_ENTITY_SECRET=
+LEPTON_WALLET_SET_ID=
+LEPTON_CIRCLE_API_URL=https://api.circle.com/v1/w3s
 
 # The address Circle can actually sign for. Prefer a Circle *agent* wallet.
 LEPTON_TREASURY_ADDRESS=0x7d41e0AA33A4850E20ECa993dF6F0403d6527C6E

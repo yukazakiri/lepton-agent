@@ -6,9 +6,17 @@ return [
     | Default driver
     |--------------------------------------------------------------------------
     | circle: shell out to `circle` + `arc-canteen` binaries via Symfony Process
+    | developer / circle-rest: pure HTTP REST API via Circle Developer-Controlled Wallets
     | fake: in-memory ledger for tests / offline demo (no chain touch)
     */
     'default' => env('LEPTON_DRIVER', env('APP_ENV') === 'testing' ? 'fake' : 'circle'),
+
+    'developer' => [
+        'api_key' => env('LEPTON_CIRCLE_API_KEY', env('CIRCLE_API_KEY')),
+        'entity_secret' => env('LEPTON_ENTITY_SECRET', env('CIRCLE_ENTITY_SECRET')),
+        'wallet_set_id' => env('LEPTON_WALLET_SET_ID', env('CIRCLE_WALLET_SET_ID')),
+        'base_url' => env('LEPTON_CIRCLE_API_URL', env('CIRCLE_API_URL', 'https://api.circle.com/v1/w3s')),
+    ],
 
     'circle' => [
         'bin' => env('LEPTON_CIRCLE_BIN', 'circle'),

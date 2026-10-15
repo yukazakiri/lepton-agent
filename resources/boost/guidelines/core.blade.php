@@ -125,7 +125,7 @@ opt-in web flow.
 
 ### Drivers and testing
 
-`LEPTON_DRIVER=circle` is real. `LEPTON_DRIVER=fake` is an in-memory ledger needing no
+`LEPTON_DRIVER=circle` is the Circle CLI agent stack. `LEPTON_DRIVER=developer` (or `circle-rest`) uses pure HTTP REST APIs for Circle Developer-Controlled Wallets via `Yukazakiri\Lepton\Gateways\CircleRestGateway`. `LEPTON_DRIVER=fake` is an in-memory ledger needing no
 network, credentials or cost, and defaults under `APP_ENV=testing`.
 
 @verbatim
