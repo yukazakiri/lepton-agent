@@ -8,14 +8,14 @@ hardcodes a `circle` or `arc-canteen` command.
 
 Resolve these from the container. Never shell out yourself.
 
-- `WalletGateway` — `transfer()`, `balance()`, `transactions()`, `limits()`
+- `WalletGateway` — `transfer()`, `balance()`, `transactions()`, `limits()`, `wallets()`, `createWallet()`, `fundWallet()`
 - `ArcNetworkGateway` — `rpc()`, `blockNumber()`, `chainId()`, `rpcUrl()`, `treasuryAddress()`, `explorerUrl()`, `addressExplorerUrl()`
 - `AuthGateway` — `authStatus()`, `beginLogin()`, `completeLogin()`, `isAuthenticatedFor()`
 - `X402Gateway` — `searchServices()`, `inspectService()`, `payService()`, `gatewayBalance()`
 - `CircleGateway` — `run()`, `wallets()`, `createWallet()`, `fundWallet()`, `signMessage()`, `signTypedData()`, `execute()`, `gatewayDeposit()`, `gatewayWithdraw()`, `bridgeTransfer()`, `bridgeStatus()`, `bridgeFee()`, `contractAddress()`, `contractQuery()`, `blockchains()`
 
 The `Lepton` facade exposes `transfer`, `transferDecimal`, `balance`, `status`,
-`authStatus`, `isAuthenticated`, and accessors for each gateway.
+`authStatus`, `isAuthenticated`, `listWallets`, `createWallet`, `fundWallet`, and accessors for each gateway.
 
 ### Non-negotiable conventions
 
