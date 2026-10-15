@@ -150,7 +150,8 @@ than relying on a shared instance.
 ### Commands
 
 This package registers `lepton:login` (and `--status`), `lepton:status`,
-`lepton:transfer` and `lepton:circle`.
+`lepton:transfer`, `lepton:circle`, `lepton:wallets`, `lepton:wallet:create`, and
+`lepton:wallet:fund`.
 
 Applications built on this package often add their own diagnostics — for example a
 doctor command that checks binaries, session state and the treasury address. Check the

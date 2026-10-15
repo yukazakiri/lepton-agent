@@ -119,6 +119,10 @@ final class LeptonServiceProvider extends ServiceProvider
                 Console\Commands\LeptonTransferCommand::class,
                 Console\Commands\LeptonAuthCommand::class,
                 Console\Commands\LeptonCircleCommand::class,
+                Console\Commands\LeptonWalletCommand::class,
+                Console\Commands\LeptonWalletListCommand::class,
+                Console\Commands\LeptonWalletCreateCommand::class,
+                Console\Commands\LeptonWalletFundCommand::class,
             ]);
         }
     }

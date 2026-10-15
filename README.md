@@ -415,6 +415,10 @@ php artisan lepton:status --address=0xTreasury             # chain, block, balan
 php artisan lepton:transfer 0xRecipient --amount=1.00 --from=0xTreasury
 php artisan lepton:transfer 0xRecipient --amount=1.00 --from=0xTreasury --estimate
 
+php artisan lepton:wallets                                 # list agent wallets (--chain, --type, --json)
+php artisan lepton:wallet:create --testnet                 # create agent wallet on testnet
+php artisan lepton:wallet:fund 0xTreasury                  # fund wallet with tokens (faucet on testnet)
+
 php artisan lepton:circle blockchain list                  # run Circle CLI command (requires LEPTON_ALLOW_RAW_CIRCLE=true)
 ```
 

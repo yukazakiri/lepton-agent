@@ -54,4 +54,28 @@ interface WalletGateway
      * @return array<string,mixed>
      */
     public function limits(string $address, array $options = []): array;
+
+    /**
+     * List wallets on a blockchain.
+     *
+     * @param  array<string,mixed>  $options  Supported: chain, type
+     * @return array<int,array<string,mixed>>
+     */
+    public function wallets(array $options = []): array;
+
+    /**
+     * Create agent-controlled SCA wallets on supported chains.
+     *
+     * @param  array<string,mixed>  $options  Supported: testnet, type, idempotencyKey
+     * @return array<string,mixed>
+     */
+    public function createWallet(array $options = []): array;
+
+    /**
+     * Fund a wallet (faucet on testnet, Transak on mainnet).
+     *
+     * @param  array<string,mixed>  $options  Supported: chain, token, amount, method, open
+     * @return array<string,mixed>
+     */
+    public function fundWallet(string $address, array $options = []): array;
 }

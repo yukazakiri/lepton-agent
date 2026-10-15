@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace Yukazakiri\Lepton\Gateways;
 
 use Illuminate\Support\Str;
+use InvalidArgumentException;
+use Yukazakiri\Lepton\Contracts\AuthGateway;
+use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
 use Yukazakiri\Lepton\DTOs\TransferResolution;
 use Yukazakiri\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\Support\Amounts;
 use Yukazakiri\Lepton\Support\CliRunner;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 
@@ -37,7 +42,7 @@ use Yukazakiri\Lepton\Support\LeptonRuntimeException;
  * alternative is recording an invented reference — the exact failure this
  * package exists to prevent.
  */
-class CircleCliGateway implements WalletGateway
+class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X402Gateway
 {
     public function __construct(
         private readonly CliRunner $circle,
@@ -49,7 +54,7 @@ class CircleCliGateway implements WalletGateway
     public function transfer(string $fromAddress, string $toAddress, int $amountBaseUnits, array $options = []): TransferResult
     {
         $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $amount = \Yukazakiri\Lepton\Support\Amounts::toCliAmount($amountBaseUnits, $this->usdcDecimals);
+        $amount = Amounts::toCliAmount($amountBaseUnits, $this->usdcDecimals);
 
         $args = ['wallet', 'transfer', $toAddress, '--amount', $amount, '--address', $fromAddress, '--chain', $chain];
 
@@ -203,6 +208,383 @@ class CircleCliGateway implements WalletGateway
         return (array) self::unwrap($out);
     }
 
+    public function searchServices(string $query): array
+    {
+        /** @var array<string,mixed>|string $out */
+        $out = $this->circle->run(['services', 'search', $query, '--output', 'json']);
+        $payload = self::unwrap($out);
+
+        return $payload['services'] ?? (array_is_list($payload) ? $payload : [$payload]);
+    }
+
+    public function inspectService(string $url, array $options = []): array
+    {
+        /** @var array<string,mixed>|string $out */
+        $out = $this->circle->run(['services', 'inspect', $url, '--output', 'json']);
+
+        return self::unwrap($out);
+    }
+
+    public function payService(string $url, string $fromAddress, array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['services', 'pay', $url, '--address', $fromAddress, '--chain', $chain, '--output', 'json'];
+
+        foreach (['method' => '--method', 'data' => '--data', 'maxAmount' => '--max-amount', 'timeout' => '--timeout'] as $key => $flag) {
+            if (! empty($options[$key])) {
+                array_push($args, $flag, (string) $options[$key]);
+            }
+        }
+
+        /** @var array<string,mixed>|string $out */
+        $out = $this->circle->run($args);
+
+        return self::unwrap($out);
+    }
+
+    public function gatewayBalance(string $address, array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['gateway', 'balance', '--address', $address, '--chain', $chain, '--output', 'json'];
+
+        /** @var array<string,mixed>|string $out */
+        $out = $this->circle->run($args);
+
+        return self::unwrap($out);
+    }
+
+    public function run(array $args, bool $json = true, array $options = []): array|string
+    {
+        $env = array_merge(['CIRCLE_ACCEPT_TERMS' => '1'], (array) ($options['env'] ?? []));
+
+        if (! $json) {
+            /** @var string $output */
+            $output = $this->circle->run($args, false, $env);
+
+            return $output;
+        }
+
+        /** @var array<string,mixed>|string $out */
+        $out = $this->circle->run($args, true, $env);
+
+        return self::unwrap($out);
+    }
+
+    public function wallets(array $options = []): array
+    {
+        $args = ['wallet', 'list'];
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        if (is_string($chain) && $chain !== '') {
+            array_push($args, '--chain', $chain);
+        }
+        if (! empty($options['type'])) {
+            array_push($args, '--type', (string) $options['type']);
+        }
+
+        $out = $this->run($args, true, $options);
+        $payload = is_array($out) ? self::unwrap($out) : [];
+
+        return $payload['wallets'] ?? (array_is_list($payload) ? $payload : []);
+    }
+
+    public function createWallet(array $options = []): array
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Cannot create wallet while dry-run mode is enabled (no CLI estimation supported).');
+        }
+
+        $args = ['wallet', 'create'];
+        if (! empty($options['testnet'])) {
+            $args[] = '--testnet';
+        }
+        if (! empty($options['type'])) {
+            array_push($args, '--type', (string) $options['type']);
+        }
+        if (! empty($options['idempotencyKey'])) {
+            array_push($args, '--idempotency-key', (string) $options['idempotencyKey']);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function fundWallet(string $address, array $options = []): array
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Cannot fund wallet while dry-run mode is enabled (no CLI estimation supported).');
+        }
+
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['wallet', 'fund', '--address', $address, '--chain', $chain, '--no-open'];
+
+        if (! empty($options['token'])) {
+            array_push($args, '--token', (string) $options['token']);
+        }
+        if (isset($options['amount'])) {
+            array_push($args, '--amount', $this->formatAmount($options['amount']));
+        }
+        if (! empty($options['method'])) {
+            array_push($args, '--method', (string) $options['method']);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function signMessage(string $address, string $message, array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['wallet', 'sign', 'message', $message, '--address', $address];
+        if (is_string($chain) && $chain !== '') {
+            array_push($args, '--chain', $chain);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function signTypedData(string $address, string $typedData, array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['wallet', 'sign', 'typed-data', $typedData, '--address', $address];
+        if (is_string($chain) && $chain !== '') {
+            array_push($args, '--chain', $chain);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function execute(string $address, string $contract, string $signature, array $params = [], array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['wallet', 'execute', $signature];
+
+        foreach ($params as $param) {
+            $args[] = (string) $param;
+        }
+
+        array_push($args, '--contract', $contract, '--address', $address, '--chain', $chain);
+
+        if (isset($options['amount'])) {
+            array_push($args, '--amount', (string) $options['amount']);
+        }
+        if ($this->dryRun || ! empty($options['estimate'])) {
+            $args[] = '--estimate';
+        }
+        if (! empty($options['idempotencyKey'])) {
+            array_push($args, '--idempotency-key', (string) $options['idempotencyKey']);
+        }
+        $rpcUrl = $options['rpcUrl'] ?? $this->defaultRpcUrl;
+        if (is_string($rpcUrl) && $rpcUrl !== '') {
+            array_push($args, '--rpc-url', $rpcUrl);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function gatewayDeposit(string $address, int|string $amount, array $options = []): array
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Cannot deposit to gateway while dry-run mode is enabled (no CLI estimation supported).');
+        }
+
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $formattedAmount = $this->formatAmount($amount);
+        $args = ['gateway', 'deposit', '--amount', $formattedAmount, '--address', $address, '--chain', $chain];
+
+        if (! empty($options['method'])) {
+            array_push($args, '--method', (string) $options['method']);
+        }
+        if (! empty($options['timeout'])) {
+            array_push($args, '--timeout', (string) $options['timeout']);
+        }
+        if (! empty($options['noWait'])) {
+            $args[] = '--no-wait';
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function gatewayWithdraw(string $address, int|string $amount, array $options = []): array
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Cannot withdraw from gateway while dry-run mode is enabled (no CLI estimation supported).');
+        }
+
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $formattedAmount = $this->formatAmount($amount);
+        $args = ['gateway', 'withdraw', '--amount', $formattedAmount, '--address', $address, '--chain', $chain];
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function bridgeTransfer(string $fromAddress, string $toChain, int|string $amount, array $options = []): array
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Cannot bridge transfer while dry-run mode is enabled (no CLI estimation supported).');
+        }
+
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $formattedAmount = $this->formatAmount($amount);
+        $args = ['bridge', 'transfer', $toChain];
+
+        if (! empty($options['recipient'])) {
+            $args[] = (string) $options['recipient'];
+        }
+        array_push($args, '--amount', $formattedAmount, '--address', $fromAddress, '--chain', $chain);
+
+        if (! empty($options['idempotencyKey'])) {
+            array_push($args, '--idempotency-key', (string) $options['idempotencyKey']);
+        }
+        if (! empty($options['rpcUrl'])) {
+            array_push($args, '--rpc-url', (string) $options['rpcUrl']);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function bridgeStatus(string $burnTxHash, array $options = []): array
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        $args = ['bridge', 'status', $burnTxHash];
+        if (is_string($chain) && $chain !== '') {
+            array_push($args, '--chain', $chain);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function bridgeFee(string $fromChain, string $toChain, array $options = []): array
+    {
+        $out = $this->run(['bridge', 'get-fee', $toChain, '--chain', $fromChain], true, $options);
+
+        return is_array($out) ? self::unwrap($out) : ['raw' => $out];
+    }
+
+    public function contractAddress(?string $name = null, array $options = []): array
+    {
+        $args = ['contract', 'address'];
+        if ($name !== null && $name !== '') {
+            $args[] = $name;
+        }
+
+        $out = $this->run($args, true, $options);
+        $payload = is_array($out) ? self::unwrap($out) : [];
+
+        return $payload['contracts'] ?? (array_is_list($payload) ? $payload : (array) $payload);
+    }
+
+    public function contractQuery(string $contract, string $signature, array $params = [], array $options = []): mixed
+    {
+        $args = ['contract', 'query', $signature];
+
+        foreach ($params as $param) {
+            $args[] = (string) $param;
+        }
+
+        array_push($args, '--contract', $contract);
+
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        if (is_string($chain) && $chain !== '') {
+            array_push($args, '--chain', $chain);
+        }
+        if (! empty($options['rpcUrl'])) {
+            array_push($args, '--rpc-url', (string) $options['rpcUrl']);
+        }
+
+        $out = $this->run($args, true, $options);
+
+        return is_array($out) ? self::unwrap($out) : $out;
+    }
+
+    public function blockchains(array $options = []): array
+    {
+        $out = $this->run(['blockchain', 'list'], true, $options);
+        $payload = is_array($out) ? self::unwrap($out) : [];
+
+        return $payload['blockchains'] ?? (array_is_list($payload) ? $payload : []);
+    }
+
+    public function authStatus(): array
+    {
+        $empty = ['authenticated' => false, 'email' => null, 'status' => null, 'expires_in' => null];
+
+        $out = self::unwrap($this->circle->run(['wallet', 'status', '--type', 'agent', '--output', 'json']));
+
+        $read = function (?array $section) use ($empty): array {
+            if ($section === null) {
+                return $empty;
+            }
+
+            $status = isset($section['tokenStatus']) ? (string) $section['tokenStatus'] : null;
+
+            return [
+                'authenticated' => strtoupper((string) $status) === 'VALID',
+                'email' => isset($section['email']) ? (string) $section['email'] : null,
+                'status' => $status,
+                'expires_in' => isset($section['expiresIn']) ? (string) $section['expiresIn'] : null,
+            ];
+        };
+
+        return [
+            'type' => (string) ($out['type'] ?? 'agent'),
+            'mainnet' => $read(is_array($out['mainnet'] ?? null) ? $out['mainnet'] : null),
+            'testnet' => $read(is_array($out['testnet'] ?? null) ? $out['testnet'] : null),
+        ];
+    }
+
+    public function beginLogin(string $email): string
+    {
+        $out = self::unwrap($this->circle->run(
+            ['wallet', 'login', $email, '--init', '--output', 'json'],
+            true,
+            ['CIRCLE_ACCEPT_TERMS' => '1'],
+        ));
+
+        $requestId = $out['requestId'] ?? $out['request_id'] ?? $out['id'] ?? null;
+
+        if (! is_string($requestId) || $requestId === '') {
+            throw new LeptonRuntimeException(
+                'Circle CLI did not return a login request ID. Raw response: '.json_encode($out)
+            );
+        }
+
+        return $requestId;
+    }
+
+    public function completeLogin(string $requestId, string $otp): array
+    {
+        $out = self::unwrap($this->circle->run(['wallet', 'login', '--request', $requestId, '--otp', $otp, '--output', 'json']));
+
+        return [
+            'email' => isset($out['email']) ? (string) $out['email'] : null,
+            'status' => isset($out['status']) ? (string) $out['status'] : 'VALID',
+        ];
+    }
+
+    public function isAuthenticatedFor(string $chainCode = 'ARC-TESTNET'): bool
+    {
+        $status = $this->authStatus();
+        $key = str_contains(strtoupper($chainCode), 'TESTNET') ? 'testnet' : 'mainnet';
+
+        return $status[$key]['authenticated'] === true;
+    }
+
     /**
      * A completed transfer still has to yield a real on-chain reference.
      *
@@ -240,9 +622,6 @@ class CircleCliGateway implements WalletGateway
             return null;
         }
 
-        // Only a well-formed UUID is a Circle transaction identifier. Anything
-        // else is whatever the CLI chose to print, and printing is not
-        // acceptance.
         return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $candidate) === 1
             ? $candidate
             : null;
@@ -250,7 +629,6 @@ class CircleCliGateway implements WalletGateway
 
     /**
      * @param  array<string,mixed>|string  $payload
-     * @return array<string,mixed>
      */
     private function hash(array|string $payload): ?string
     {
@@ -274,5 +652,19 @@ class CircleCliGateway implements WalletGateway
         }
 
         return is_array($out['data'] ?? null) ? $out['data'] : $out;
+    }
+
+    private function formatAmount(int|string $amount): string
+    {
+        if (is_int($amount)) {
+            return Amounts::toCliAmount($amount, $this->usdcDecimals);
+        }
+
+        $trimmed = trim((string) $amount);
+        if (! is_numeric($trimmed)) {
+            throw new InvalidArgumentException("Invalid amount [{$amount}].");
+        }
+
+        return $trimmed;
     }
 }
