@@ -133,3 +133,18 @@ it('never presents the fake driver as settling real funds', function (): void {
         ->and($readme)->toMatch('/`fake`/')
         ->and($readme)->toContain('LEPTON_DRIVER=circle');
 });
+
+it('documents unresolved REST production gates and the notification trust boundary', function (): void {
+    $readme = readmeText();
+
+    expect($readme)->toContain('[Production readiness](#production-readiness)')
+        ->and($readme)->toContain('hardening planned, not completed')
+        ->and($readme)->toContain('GET /v1/w3s/transactions/{id}')
+        ->and($readme)->toContain('GET /v1/w3s/wallets/{id}/balances')
+        ->and($readme)->toContain('GET /v2/notifications/publicKey/{keyId}')
+        ->and($readme)->toContain('ECDSA_SHA_256')
+        ->and($readme)->toContain('unique `notificationId`')
+        ->and($readme)->toContain('original persisted idempotency key')
+        ->and($readme)->toContain('Mock-only tests do not satisfy this gate.')
+        ->and($readme)->not->toContain('no polling loop is');
+});
