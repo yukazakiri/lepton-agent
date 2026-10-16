@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton\Gateways;
 
-use Throwable;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+use Yukazakiri\Lepton\Contracts\JsonTransport;
+use Yukazakiri\Lepton\Support\Amounts;
 use Yukazakiri\Lepton\Support\CliRunner;
+use Yukazakiri\Lepton\Support\CurlJsonTransport;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 
 final class ArcCanteenGateway implements ArcNetworkGateway
 {
+    private bool $networkVerified = false;
+
     public const TESTNET_RPC_URL = 'https://rpc.testnet.arc.io';
 
     public const MAINNET_RPC_URL = 'https://rpc.mainnet.arc.io';
@@ -24,6 +28,7 @@ final class ArcCanteenGateway implements ArcNetworkGateway
         private readonly string $testnetExplorer = 'https://testnet.arcscan.app/tx/',
         private readonly string $mainnetExplorer = 'https://arcscan.app/tx/',
         private readonly int $timeout = 10,
+        private readonly ?JsonTransport $transport = null,
     ) {}
 
     public function rpcUrl(): string
@@ -32,26 +37,16 @@ final class ArcCanteenGateway implements ArcNetworkGateway
             return $this->configuredRpcUrl;
         }
 
-        if ($this->arc !== null) {
-            try {
-                $out = $this->arc->run(['rpc-url'], false);
-                $url = is_string($out) ? trim($out) : '';
-                if ($url !== '') {
-                    return $url;
-                }
-            } catch (Throwable) {
-                // Fall through to public endpoint
-            }
-        }
-
         return $this->defaultPublicRpcUrl();
     }
 
     public function defaultPublicRpcUrl(): string
     {
-        return str_contains(strtoupper($this->chainCode), 'TESTNET')
-            ? self::TESTNET_RPC_URL
-            : self::MAINNET_RPC_URL;
+        return match ($this->chainCode) {
+            'ARC-TESTNET' => self::TESTNET_RPC_URL,
+            'ARC' => self::MAINNET_RPC_URL,
+            default => throw new LeptonRuntimeException('Unsupported Arc network; no mainnet fallback.'),
+        };
     }
 
     public function chainCode(): string
@@ -88,94 +83,38 @@ final class ArcCanteenGateway implements ArcNetworkGateway
 
     public function rpc(string $method, array $params = []): mixed
     {
-        $url = $this->rpcUrl();
-
-        if ($url !== '') {
-            try {
-                return $this->httpJsonRpc($url, $method, $params);
-            } catch (Throwable $httpException) {
-                if ($this->arc === null) {
-                    throw $httpException;
-                }
+        if (! $this->networkVerified) {
+            $network = $this->httpJsonRpc($this->rpcUrl(), 'eth_chainId', []);
+            if (! is_string($network) || Amounts::fromHexQuantity($network, 0) !== (string) $this->chainId
+                || ! in_array([$this->chainCode, $this->chainId], [['ARC', 5042], ['ARC-TESTNET', 5042002]], true)) {
+                throw new LeptonRuntimeException('Arc RPC chain ID does not match the configured network.');
+            }
+            $this->networkVerified = true;
+            if ($method === 'eth_chainId') {
+                return $network;
             }
         }
 
-        if ($this->arc !== null) {
-            $args = ['rpc', $method];
-            if ($params !== []) {
-                $args[] = json_encode($params, JSON_THROW_ON_ERROR);
-            }
-
-            $out = $this->arc->run($args, false);
-            if (! is_string($out) || trim($out) === '') {
-                return null;
-            }
-
-            $decoded = json_decode(trim($out), true);
-
-            return json_last_error() === JSON_ERROR_NONE ? $decoded : trim($out);
-        }
-
-        return null;
+        return $this->httpJsonRpc($this->rpcUrl(), $method, $params);
     }
 
     private function httpJsonRpc(string $url, string $method, array $params): mixed
     {
-        $payload = json_encode([
+        $payload = [
             'jsonrpc' => '2.0',
             'method' => $method,
             'params' => $params,
             'id' => 1,
-        ], JSON_THROW_ON_ERROR);
-
-        if (function_exists('curl_init')) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $payload,
-                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $this->timeout,
-            ]);
-            $raw = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $err = curl_error($ch);
-            curl_close($ch);
-
-            if ($raw === false || $code >= 400) {
-                throw new LeptonRuntimeException("Arc RPC HTTP request to {$url} failed (code {$code}): {$err}");
-            }
-
-            $decoded = json_decode((string) $raw, true, flags: JSON_THROW_ON_ERROR);
-            if (isset($decoded['error'])) {
-                $msg = is_array($decoded['error']) ? ($decoded['error']['message'] ?? json_encode($decoded['error'])) : (string) $decoded['error'];
-                throw new LeptonRuntimeException("Arc RPC error: {$msg}");
-            }
-
-            return $decoded['result'] ?? null;
+        ];
+        $response = ($this->transport ?? new CurlJsonTransport($this->timeout))->request('POST', $url,
+            ['Accept' => 'application/json', 'Content-Type' => 'application/json'], $payload);
+        $decoded = $response->data;
+        if ($response->status !== 200 || ($decoded['jsonrpc'] ?? null) !== '2.0' || ($decoded['id'] ?? null) !== 1
+            || isset($decoded['error']) || ! array_key_exists('result', $decoded)) {
+            throw new LeptonRuntimeException('Arc RPC rejected or malformed the response; no alternate network was queried.');
         }
 
-        $ctx = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/json\r\n",
-                'content' => $payload,
-                'timeout' => $this->timeout,
-                'ignore_errors' => true,
-            ],
-        ]);
-        $raw = @file_get_contents($url, false, $ctx);
-        if ($raw === false) {
-            throw new LeptonRuntimeException("Arc RPC HTTP request failed to {$url}");
-        }
-
-        $decoded = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
-        if (isset($decoded['error'])) {
-            $msg = is_array($decoded['error']) ? ($decoded['error']['message'] ?? json_encode($decoded['error'])) : (string) $decoded['error'];
-            throw new LeptonRuntimeException("Arc RPC error: {$msg}");
-        }
-
-        return $decoded['result'] ?? null;
+        return $decoded['result'];
     }
 
     private function explorerBase(): string

@@ -1,168 +1,73 @@
-## Lepton Agent for Laravel
+## Lepton Agent SDK for Laravel
 
-Wraps [Circle Agent Stack](https://developers.circle.com/agent-stack) wallets and the
-[Arc](https://docs.arc.io) network behind injected contracts, so application code never
-hardcodes a `circle` or `arc-canteen` command.
+Community-maintained Laravel-first SDK for Circle wallets and Arc. PHP 8.5,
+Laravel 13. Inject contracts; do not embed provider HTTP requests or CLI commands
+in application code. Not an official Circle SDK or production certification.
 
-### Contracts
+### Contracts and capabilities
 
-Resolve these from the container. Never shell out yourself.
+- `WalletGateway`: transfer, balance, transactions, limits (original four methods).
+- `WalletManagementGateway`: wallets, createWallet, fundWallet.
+- `TransferObserver`: resolve accepted provider IDs without resending.
+- `TransferEstimator`: estimateTransfer (never a transfer outcome).
+- `ArcNetworkGateway`: rpc, blockNumber, chainId, chainCode, treasuryAddress,
+  rpcUrl, explorerUrl, addressExplorerUrl.
+- `AuthGateway`: authStatus, beginLogin, completeLogin, isAuthenticatedFor.
+- `WebhookVerifier`: verify raw Circle notification using signing key ID.
+- `CircleGateway`, `X402Gateway`: extended driver APIs; REST throws explicit
+  unsupported errors for Gateway/CCTP/x402 rather than inventing balances.
+- `Amounts`: exact decimal/integer and fromHexQuantity conversions.
 
-- `WalletGateway` — `transfer()`, `balance()`, `transactions()`, `limits()`, `wallets()`, `createWallet()`, `fundWallet()`
-- `ArcNetworkGateway` — `rpc()`, `blockNumber()`, `chainId()`, `rpcUrl()`, `treasuryAddress()`, `explorerUrl()`, `addressExplorerUrl()`
-- `AuthGateway` — `authStatus()`, `beginLogin()`, `completeLogin()`, `isAuthenticatedFor()`
-- `X402Gateway` — `searchServices()`, `inspectService()`, `payService()`, `gatewayBalance()`
-- `CircleGateway` — `run()`, `wallets()`, `createWallet()`, `fundWallet()`, `signMessage()`, `signTypedData()`, `execute()`, `gatewayDeposit()`, `gatewayWithdraw()`, `bridgeTransfer()`, `bridgeStatus()`, `bridgeFee()`, `contractAddress()`, `contractQuery()`, `blockchains()`
+Use `Lepton::transfer`, transferDecimal, resolve, estimateTransfer, listWallets,
+createWallet, createWalletSet, fundWallet, webhooks, auth, arc and services.
 
-The `Lepton` facade exposes `transfer`, `transferDecimal`, `balance`, `status`,
-`authStatus`, `isAuthenticated`, `listWallets`, `createWallet`, `fundWallet`, and accessors for each gateway.
+### Money and identity
 
-### Non-negotiable conventions
+USDC uses integer six-decimal base units. Arc native USDC uses 18 decimals and
+exposes the same funds as ERC-20 USDC; never add both views. Never `hexdec()` a
+chain quantity or use floats; `Amounts::fromHexQuantity()` uses exact strings.
+Destination requires `0x` followed by exactly 40 hex digits, from reviewed records.
+Never synthesize recipients. Syntax does not prove ownership.
 
-**Amounts are integer base units, never floats.** USDC is 6 decimals, so `45.00 USDC`
-is `45_000000`. Convert with `Amounts`, never `(int) (45.00 * 1000000)`.
+REST mutations require a persisted UUID v4 `idempotencyKey` before I/O; reuse
+original identity for recovery, never create a new payment after timeout.
+Explicit wallet set and network required; no first-row custody selection.
+Signing requires fresh RSA-OAEP SHA-256 Entity Secret ciphertext; operator owns
+registration/recovery. Do not register or rotate secrets automatically.
 
-@verbatim
-<code-snippet name="Converting amounts without floats" lang="php">
-use Yukazakiri\Lepton\Support\Amounts;
+### Settlement and notifications
 
-// "45.00" -> 45_000000
-$units = Amounts::fromDecimalString('45.00');
+A transaction ID or hash is a claim, not proof. Transfer may return nullable
+txHash plus handle/state. `TransferObserver::resolve()` never submits.
+CONFIRMED remains pending. Provider COMPLETE plus hash is provider observation,
+not proof of matching business settlement. Verify receipt success, intended
+network/token/sender/recipient/amount and finality. Null RPC result is unresolved,
+not evidence of fabrication. Retried signing risks double payment.
 
-// 45_000000 -> "45.00"
-$display = Amounts::toDecimalString($units);
-</code-snippet>
-@endverbatim
-
-**Never `hexdec()` a chain quantity.** Arc native USDC is 18 decimals, so 20 USDC is
-2e19 wei, which exceeds `PHP_INT_MAX`. `hexdec()` returns a float there and an `(int)`
-cast wraps to a negative number.
-
-@verbatim
-<code-snippet name="Reading a hex quantity safely" lang="php">
-use Yukazakiri\Lepton\Support\Amounts;
-
-$arc = app(Yukazakiri\Lepton\Contracts\ArcNetworkGateway::class);
-$wei = $arc->rpc('eth_getBalance', [$address, 'latest']);
-
-// String arithmetic. Returns "5.01", exact.
-$usdc = Amounts::fromHexQuantity($wei, 18);
-</code-snippet>
-@endverbatim
-
-**A returned transaction hash is a claim, not proof.** Verify it on-chain before
-recording a payment as settled.
-
-@verbatim
-<code-snippet name="Proving settlement" lang="php">
-$tx = app(Yukazakiri\Lepton\Contracts\ArcNetworkGateway::class)
-    ->rpc('eth_getTransactionByHash', [$hash]);
-
-$settled = is_array($tx) && $tx !== [];
-</code-snippet>
-@endverbatim
-
-**Prefer a Circle agent wallet address.** Circle only signs for wallets it custodies.
-An `arc-canteen` local wallet holds a key Circle cannot use, so transfers against it
-fail with "no agent session is active" even when the session is valid.
-
-**Mainnet and testnet authenticate independently.** A valid mainnet session does not
-authorise an ARC-TESTNET transfer. Check the specific chain before moving money.
-
-**`rpc()` is allowlisted.** The Arc proxy rejects some methods by design. A response of
-`method 'x' not allowed by the proxy` means the method is not exposed, not that the
-call is broken.
-
-### Transferring
-
-@verbatim
-<code-snippet name="Transfer USDC" lang="php">
-use Yukazakiri\Lepton\Contracts\WalletGateway;
-use Yukazakiri\Lepton\Support\Amounts;
-
-$result = app(WalletGateway::class)->transfer(
-    fromAddress: '0xTreasury',
-    toAddress: '0xRecipient',
-    amountBaseUnits: Amounts::fromDecimalString('45.00'),
-    options: ['chain' => 'ARC-TESTNET'],
-);
-
-$result->txHash;      // a claim, verify before calling it settled
-$result->explorerUrl;
-$result->isFake;      // true only under the fake driver
-</code-snippet>
-@endverbatim
-
-Supported options: `chain`, `rpcUrl`, `token`, `idempotencyKey`, `estimate`.
-`estimate` validates the fee without broadcasting. `LEPTON_DRY_RUN=true` applies it
-globally.
-
-**Before writing a transfer, validate the destination.** Circle requires `0x` followed
-by exactly 40 hex characters; EIP-55 checksum casing is not required. A rejected
-address is recoverable, one the recipient does not control is not. Never synthesise a
-recipient from a hash or an id.
-
-### Auth
-
-Sessions last seven days and are owned by the Circle CLI. The package stores no
-credentials.
-
-@verbatim
-<code-snippet name="Checking and driving authentication" lang="php">
-$auth = app(Yukazakiri\Lepton\Contracts\AuthGateway::class);
-
-$auth->isAuthenticatedFor('ARC-TESTNET');  // guard before transferring
-
-$requestId = $auth->beginLogin('you@example.com');
-// The OTP still comes from a human inbox.
-$auth->completeLogin($requestId, 'B1X-123456');
-</code-snippet>
-@endverbatim
-
-Never call `beginLogin()` or `completeLogin()` from a queue worker or a settlement
-path. The OTP needs a human, so login belongs in an operator-run command or an
-opt-in web flow.
+Webhook verification uses X-Circle-Key-Id at /v2/notifications/publicKey/{keyId},
+ECDSA_SHA_256, original raw bytes, subscription and timestamp. Never use entity
+RSA encryption key for notifications. Persist unique notificationId/digest before
+ACK and queue observation only. Never authorize or mark paid from a webhook.
+Keep polling recovery and duplicate/out-of-order guards in consuming application.
 
 ### Drivers and testing
 
-`LEPTON_DRIVER=circle` is the Circle CLI agent stack. `LEPTON_DRIVER=developer` (or `circle-rest`) uses pure HTTP REST APIs for Circle Developer-Controlled Wallets via `Yukazakiri\Lepton\Gateways\CircleRestGateway`. `LEPTON_DRIVER=fake` is an in-memory ledger needing no
-network, credentials or cost, and defaults under `APP_ENV=testing`.
+`LEPTON_DRIVER=circle` uses Agent Stack CLI. Mainnet and testnet authenticate
+independently; OTP needs a human, never a queue/settlement path.
+`developer`/`circle-rest` uses Developer-Controlled Wallet REST on Arc; API-read
+access verification is not proof of signing-secret registration. Existing agent
+wallets do not migrate custody by changing credentials.
+`LEPTON_DRIVER=fake` needs no network, no credentials and no cost; receipts are
+simulated only. Scoped bindings are Octane-safe; bind fresh fakes per test.
+Unknown drivers fail closed, and HTTP failure never switches networks.
 
-@verbatim
-<code-snippet name="Testing without a chain" lang="php">
-config(['lepton.default' => 'fake']);
+Use estimateTransfer for preflight. LEPTON_DRY_RUN blocks REST mutations and
+signing. Fee estimate is not an enforced fee ceiling.
+Provider `not allowed by the proxy` means method unavailable, not payment failure.
 
-$wallets = app(Yukazakiri\Lepton\Contracts\WalletGateway::class);
-$wallets->seedBalance('0xTreasury', 45_000000);
+### Artisan
 
-$result = $wallets->transfer('0xTreasury', '0xRecipient', 45_000000);
-$result->isFake;  // true — never present this as settled
-
-// Exercise authenticated paths.
-app(Yukazakiri\Lepton\Gateways\FakeLeptonGateway::class)->fakeAuthenticated();
-</code-snippet>
-@endverbatim
-
-Bindings use `scoped()`, so they are safe under Laravel Octane and do not leak request
-state between requests. Fakes are stateful — register an explicit one per test rather
-than relying on a shared instance.
-
-### Commands
-
-This package registers `lepton:login` (and `--status`), `lepton:status`,
-`lepton:transfer`, `lepton:circle`, `lepton:wallets`, `lepton:wallet:create`, and
-`lepton:wallet:fund`.
-
-Applications built on this package often add their own diagnostics — for example a
-doctor command that checks binaries, session state and the treasury address. Check the
-application's `artisan list` before assuming such a command exists.
-
-### CLI coverage
-
-Wrapped: `wallet transfer`, `wallet balance`, `wallet limit`, `wallet status`,
-`wallet login`, `wallet create`, `wallet fund`, `wallet sign`, `wallet execute`,
-`gateway deposit`, `gateway withdraw`, `bridge transfer`, `bridge status`,
-`bridge get-fee`, `contract address`, `contract query`, `blockchain list`,
-`transaction list`, `services *`, `gateway balance`, JSON-RPC reads, arbitrary execution via `lepton:circle` or `CircleGateway::run()`.
-Not wrapped: `wallet import`, `swap`, `earn`. Run those through the Circle CLI directly
-rather than assuming the package covers them.
+Registered: lepton:login (--status), lepton:status, lepton:transfer (--estimate,
+--idempotency-key), lepton:wallets, lepton:wallet:create (--wallet-set,
+--account-type, --idempotency-key), lepton:wallet:fund, lepton:wallet, lepton:circle.
+Applications may supply their own doctor/reconciliation commands; inspect list.

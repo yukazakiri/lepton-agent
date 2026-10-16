@@ -6,7 +6,18 @@ use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\CircleGateway;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
 use Yukazakiri\Lepton\Gateways\CircleRestGateway;
+use Yukazakiri\Lepton\Support\CircleWebhookVerifier;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
+
+function developerWallet(array $overrides = []): array
+{
+    return array_replace([
+        'id' => '01899cf2-d415-7052-a207-f9862157e546',
+        'address' => '0x'.str_repeat('1', 40), 'blockchain' => 'ARC-TESTNET',
+        'accountType' => 'EOA', 'custodyType' => 'DEVELOPER',
+        'walletSetId' => 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+    ], $overrides);
+}
 
 function createTestRsaKeyPair(): array
 {
@@ -24,7 +35,7 @@ function createTestRsaKeyPair(): array
 it('binds CircleRestGateway under developer and circle-rest drivers', function (string $driver): void {
     config([
         'lepton.default' => $driver,
-        'lepton.developer.api_key' => 'TEST_KEY',
+        'lepton.developer.api_key' => 'TEST_API_KEY:fixture:secret',
         'lepton.developer.entity_secret' => str_repeat('a', 64),
     ]);
 
@@ -46,7 +57,7 @@ it('generates entity secret ciphertext using RSA-OAEP SHA-256', function (): voi
 
     $rawSecretHex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     $gateway = new CircleRestGateway(
-        apiKey: 'TEST_KEY',
+        apiKey: 'TEST_API_KEY:fixture:secret',
         entitySecret: $rawSecretHex,
         httpClient: $mockClient,
     );
@@ -68,33 +79,29 @@ it('generates entity secret ciphertext using RSA-OAEP SHA-256', function (): voi
 
     expect($success)->toBeTrue()
         ->and(bin2hex($decrypted))->toBe($rawSecretHex);
+    expect($gateway->generateEntitySecretCiphertext())->not->toBe($ciphertext);
 });
 
 it('lists developer wallets via REST API', function (): void {
     $mockClient = function (string $method, string $url, array $query): array {
         expect($method)->toBe('GET')
-            ->and($url)->toContain('/developer/wallets');
+            ->and($url)->toBe('https://api.circle.com/v1/w3s/wallets');
 
         return [
             'data' => [
                 'wallets' => [
-                    [
-                        'id' => 'w-123',
-                        'address' => '0xTreasuryDev',
-                        'blockchain' => 'ARC-TESTNET',
-                        'accountType' => 'SCA',
-                    ],
+                    developerWallet(),
                 ],
             ],
         ];
     };
 
-    $gateway = new CircleRestGateway(apiKey: 'TEST_KEY', httpClient: $mockClient);
+    $gateway = new CircleRestGateway(apiKey: 'TEST_API_KEY:fixture:secret', httpClient: $mockClient);
     $wallets = $gateway->wallets(['chain' => 'ARC-TESTNET']);
 
     expect($wallets)->toHaveCount(1)
-        ->and($wallets[0]['address'])->toBe('0xTreasuryDev')
-        ->and($wallets[0]['id'])->toBe('w-123');
+        ->and($wallets[0]['address'])->toBe(developerWallet()['address'])
+        ->and($wallets[0]['id'])->toBe(developerWallet()['id']);
 });
 
 it('creates developer-controlled wallet via REST API', function (): void {
@@ -106,17 +113,13 @@ it('creates developer-controlled wallet via REST API', function (): void {
         }
         if (str_contains($url, '/developer/wallets')) {
             expect($method)->toBe('POST')
-                ->and($body['accountType'])->toBe('SCA')
+                ->and($body['accountType'])->toBe('EOA')
                 ->and($body['entitySecretCiphertext'])->toBeString();
 
             return [
                 'data' => [
                     'wallets' => [
-                        [
-                            'id' => 'w-new',
-                            'address' => '0xNewDevWallet',
-                            'blockchain' => 'ARC-TESTNET',
-                        ],
+                        developerWallet(),
                     ],
                 ],
             ];
@@ -126,16 +129,16 @@ it('creates developer-controlled wallet via REST API', function (): void {
     };
 
     $gateway = new CircleRestGateway(
-        apiKey: 'TEST_KEY',
+        apiKey: 'TEST_API_KEY:fixture:secret',
         entitySecret: str_repeat('b', 64),
-        walletSetId: 'ws-default',
+        walletSetId: developerWallet()['walletSetId'],
         httpClient: $mockClient,
     );
 
-    $created = $gateway->createWallet(['chain' => 'ARC-TESTNET']);
+    $created = $gateway->createWallet(['chain' => 'ARC-TESTNET', 'idempotencyKey' => 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11']);
 
     expect($created['status'])->toBe('created')
-        ->and($created['wallets'][0]['address'])->toBe('0xNewDevWallet');
+        ->and($created['wallets'][0]['address'])->toBe(developerWallet()['address']);
 });
 
 it('executes transfer transaction via REST API and returns accepted result with handle', function (): void {
@@ -145,19 +148,22 @@ it('executes transfer transaction via REST API and returns accepted result with 
         if (str_contains($url, '/config/entity/publicKey')) {
             return ['data' => ['publicKey' => $pubKey]];
         }
-        if (str_contains($url, '/developer/wallets') && $method === 'GET') {
+        if ($url === 'https://api.circle.com/v1/w3s/wallets' && $method === 'GET') {
             return [
                 'data' => [
                     'wallets' => [
-                        ['id' => 'wallet-uuid-1', 'address' => '0xfromaddr', 'blockchain' => 'ARC-TESTNET'],
+                        developerWallet(),
                     ],
                 ],
             ];
         }
         if (str_contains($url, '/developer/transactions/transfer')) {
-            expect($body['destinationAddress'])->toBe('0xToAddr')
+            expect($body['destinationAddress'])->toBe('0x'.str_repeat('2', 40))
                 ->and($body['amounts'])->toBe(['10'])
-                ->and($body['walletId'])->toBe('wallet-uuid-1');
+                ->and($body['walletId'])->toBe(developerWallet()['id'])
+                ->and($body['tokenAddress'])->toBe(CircleRestGateway::USDC_ADDRESS)
+                ->and($body['feeLevel'])->toBe('MEDIUM')
+                ->and($body)->not->toHaveKey('fee');
 
             return [
                 'data' => [
@@ -171,12 +177,13 @@ it('executes transfer transaction via REST API and returns accepted result with 
     };
 
     $gateway = new CircleRestGateway(
-        apiKey: 'TEST_KEY',
+        apiKey: 'TEST_API_KEY:fixture:secret',
         entitySecret: str_repeat('c', 64),
         httpClient: $mockClient,
     );
 
-    $res = $gateway->transfer('0xfromaddr', '0xToAddr', 10_000000, ['chain' => 'ARC-TESTNET']);
+    $res = $gateway->transfer(developerWallet()['address'], '0x'.str_repeat('2', 40), 10_000000,
+        ['chain' => 'ARC-TESTNET', 'idempotencyKey' => 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11']);
 
     expect($res->handle)->toBe('116c7ce7-8f2f-53ac-8b06-f18aac151ce3')
         ->and($res->txHash)->toBeNull()
@@ -187,12 +194,13 @@ it('resolves transaction state via REST API to completed resolution', function (
     $realHash = '0x'.str_repeat('e', 64);
 
     $mockClient = function (string $method, string $url) use ($realHash): array {
-        expect($url)->toContain('/developer/transactions/tx-uuid-456');
+        expect($url)->toBe('https://api.circle.com/v1/w3s/transactions/116c7ce7-8f2f-53ac-8b06-f18aac151ce3');
 
         return [
             'data' => [
                 'transaction' => [
-                    'id' => 'tx-uuid-456',
+                    'id' => '116c7ce7-8f2f-53ac-8b06-f18aac151ce3',
+                    'blockchain' => 'ARC-TESTNET',
                     'state' => 'COMPLETE',
                     'txHash' => $realHash,
                     'blockHeight' => 84000,
@@ -201,8 +209,8 @@ it('resolves transaction state via REST API to completed resolution', function (
         ];
     };
 
-    $gateway = new CircleRestGateway(apiKey: 'TEST_KEY', httpClient: $mockClient);
-    $res = $gateway->resolve('tx-uuid-456');
+    $gateway = new CircleRestGateway(apiKey: 'TEST_API_KEY:fixture:secret', httpClient: $mockClient);
+    $res = $gateway->resolve('116c7ce7-8f2f-53ac-8b06-f18aac151ce3');
 
     expect($res->hasHash())->toBeTrue()
         ->and($res->txHash)->toBe($realHash)
@@ -211,21 +219,23 @@ it('resolves transaction state via REST API to completed resolution', function (
 
 it('reads wallet token balances and converts to minor units', function (): void {
     $mockClient = function (string $method, string $url): array {
-        if (str_contains($url, '/developer/wallets') && ! str_contains($url, '/balances')) {
+        if ($url === 'https://api.circle.com/v1/w3s/wallets') {
             return [
                 'data' => [
                     'wallets' => [
-                        ['id' => 'wallet-1', 'address' => '0xtreasury', 'blockchain' => 'ARC-TESTNET'],
+                        developerWallet(),
                     ],
                 ],
             ];
         }
 
+        expect($url)->toBe('https://api.circle.com/v1/w3s/wallets/'.developerWallet()['id'].'/balances');
+
         return [
             'data' => [
                 'tokenBalances' => [
                     [
-                        'token' => ['symbol' => 'USDC', 'decimals' => 6],
+                        'token' => ['symbol' => 'USDC', 'decimals' => 6, 'blockchain' => 'ARC-TESTNET', 'tokenAddress' => CircleRestGateway::USDC_ADDRESS],
                         'amount' => '45.50',
                     ],
                 ],
@@ -233,24 +243,17 @@ it('reads wallet token balances and converts to minor units', function (): void 
         ];
     };
 
-    $gateway = new CircleRestGateway(apiKey: 'TEST_KEY', httpClient: $mockClient);
-    $balance = $gateway->balance('0xtreasury');
+    $gateway = new CircleRestGateway(apiKey: 'TEST_API_KEY:fixture:secret', httpClient: $mockClient);
+    $balance = $gateway->balance(developerWallet()['address']);
 
     expect($balance->amountBaseUnits)->toBe(45_500000)
-        ->and($balance->address)->toBe('0xtreasury');
+        ->and($balance->address)->toBe(developerWallet()['address']);
 });
 
-it('verifies incoming webhook signatures with Circle public key', function (): void {
-    [$pubKey, $privKey] = createTestRsaKeyPair();
-
-    $gateway = new CircleRestGateway(apiKey: 'TEST_KEY');
-    $payload = json_encode(['notificationType' => 'transactions', 'data' => ['state' => 'COMPLETE']]);
-
-    openssl_sign($payload, $signature, $privKey, OPENSSL_ALGO_SHA256);
-    $sigBase64 = base64_encode($signature);
-
-    expect($gateway->verifyWebhookSignature($payload, $sigBase64, $pubKey))->toBeTrue();
-    expect($gateway->verifyWebhookSignature($payload.'tampered', $sigBase64, $pubKey))->toBeFalse();
+it('uses a dedicated authenticated notification verifier instead of entity encryption keys', function (): void {
+    $gateway = new CircleRestGateway(apiKey: 'TEST_API_KEY:fixture:secret');
+    expect($gateway->webhooks())->toBeInstanceOf(CircleWebhookVerifier::class);
+    expect(fn () => $gateway->webhooks()->verify('{}', '', 'invalid', []))->toThrow(LeptonRuntimeException::class);
 });
 
 it('guards mutating actions in dryRun mode', function (): void {

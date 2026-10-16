@@ -10,4 +10,4 @@ use RuntimeException;
  * Raised when a gateway call succeeds at the process level but the response
  * cannot be trusted, for example a transfer with no settlement hash.
  */
-final class LeptonRuntimeException extends RuntimeException {}
+class LeptonRuntimeException extends RuntimeException {}

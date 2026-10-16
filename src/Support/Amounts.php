@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Yukazakiri\Lepton\Support;
 
 use InvalidArgumentException;
+use OverflowException;
 
 final class Amounts
 {
@@ -16,7 +17,11 @@ final class Amounts
     {
         $decimal = trim($decimal);
 
-        if (! preg_match('/^\d+(\.\d{1,'.$decimals.'})?$/', $decimal)) {
+        if ($decimals < 0 || $decimals > 18) {
+            throw new InvalidArgumentException('Decimal scale must be between 0 and 18.');
+        }
+        $pattern = $decimals === 0 ? '/^\d+$/D' : '/^\d+(\.\d{1,'.$decimals.'})?$/D';
+        if (! preg_match($pattern, $decimal)) {
             throw new InvalidArgumentException("Invalid decimal amount [{$decimal}].");
         }
 
@@ -25,11 +30,18 @@ final class Amounts
         $fraction = $parts[1] ?? '';
         $fraction = str_pad(substr($fraction, 0, $decimals), $decimals, '0');
 
-        return ((int) $whole) * (10 ** $decimals) + (int) $fraction;
+        $digits = ltrim($whole.$fraction, '0') ?: '0';
+        $maximum = (string) PHP_INT_MAX;
+        if (strlen($digits) > strlen($maximum) || (strlen($digits) === strlen($maximum) && strcmp($digits, $maximum) > 0)) {
+            throw new OverflowException('Amount exceeds the supported integer range.');
+        }
+
+        return (int) $digits;
     }
 
     public static function toDecimalString(int $baseUnits, int $decimals = 6): string
     {
+        self::validateFormatting($baseUnits, $decimals);
         $divisor = 10 ** $decimals;
         $whole = intdiv($baseUnits, $divisor);
         $fraction = str_pad((string) ($baseUnits % $divisor), $decimals, '0', STR_PAD_LEFT);
@@ -42,6 +54,7 @@ final class Amounts
      */
     public static function toCliAmount(int $baseUnits, int $decimals = 6): string
     {
+        self::validateFormatting($baseUnits, $decimals);
         $divisor = 10 ** $decimals;
         $whole = intdiv($baseUnits, $divisor);
         $remainder = $baseUnits % $divisor;
@@ -122,5 +135,12 @@ final class Amounts
         $fraction = rtrim(substr($digits, -$decimals), '0');
 
         return $fraction === '' ? $whole : $whole.'.'.$fraction;
+    }
+
+    private static function validateFormatting(int $baseUnits, int $decimals): void
+    {
+        if ($baseUnits < 0 || $decimals < 0 || $decimals > 18) {
+            throw new InvalidArgumentException('Amounts must be non-negative with a scale between 0 and 18.');
+        }
     }
 }
