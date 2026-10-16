@@ -55,7 +55,7 @@ final class LeptonWalletFundCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->info("✓ Funding request submitted for {$address}.");
+        $this->info("✓ Funding request submitted for {$address}.".(! empty($result['fake']) ? ' Simulated; no real funds moved.' : ' This is not settlement proof.'));
         $this->line("  Chain: <fg=cyan>{$chain}</> | Token: <fg=cyan>{$options['token']}</>");
 
         if (str_contains(strtoupper($chain), 'TESTNET')) {

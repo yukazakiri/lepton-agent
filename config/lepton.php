@@ -16,6 +16,14 @@ return [
         'entity_secret' => env('LEPTON_ENTITY_SECRET', env('CIRCLE_ENTITY_SECRET')),
         'wallet_set_id' => env('LEPTON_WALLET_SET_ID', env('CIRCLE_WALLET_SET_ID')),
         'base_url' => env('LEPTON_CIRCLE_API_URL', env('CIRCLE_API_URL', 'https://api.circle.com/v1/w3s')),
+        'timeout' => 30,
+    ],
+
+    'webhooks' => [
+        'enabled' => (bool) env('LEPTON_WEBHOOKS_ENABLED', false),
+        'subscriptions' => array_values(array_filter(explode(',', (string) env('LEPTON_WEBHOOK_SUBSCRIPTIONS', '')))),
+        'max_age_seconds' => (int) env('LEPTON_WEBHOOK_MAX_AGE_SECONDS', 86400),
+        'api_origin' => 'https://api.circle.com',
     ],
 
     'circle' => [

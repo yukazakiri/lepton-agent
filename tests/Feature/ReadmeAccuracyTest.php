@@ -138,13 +138,11 @@ it('documents unresolved REST production gates and the notification trust bounda
     $readme = readmeText();
 
     expect($readme)->toContain('[Production readiness](#production-readiness)')
-        ->and($readme)->toContain('hardening planned, not completed')
-        ->and($readme)->toContain('GET /v1/w3s/transactions/{id}')
-        ->and($readme)->toContain('GET /v1/w3s/wallets/{id}/balances')
+        ->and($readme)->toContain('Implemented hardening is not certification.')
         ->and($readme)->toContain('GET /v2/notifications/publicKey/{keyId}')
         ->and($readme)->toContain('ECDSA_SHA_256')
         ->and($readme)->toContain('unique `notificationId`')
-        ->and($readme)->toContain('original persisted idempotency key')
-        ->and($readme)->toContain('Mock-only tests do not satisfy this gate.')
+        ->and($readme)->toContain('persisted UUID v4')
+        ->and($readme)->toContain('Mock-only tests do not satisfy live gates.')
         ->and($readme)->not->toContain('no polling loop is');
 });

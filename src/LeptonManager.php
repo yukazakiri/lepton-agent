@@ -8,12 +8,18 @@ use InvalidArgumentException;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\CircleGateway;
+use Yukazakiri\Lepton\Contracts\TransferEstimator;
+use Yukazakiri\Lepton\Contracts\TransferObserver;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\WebhookVerifier;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\TransferResolution;
 use Yukazakiri\Lepton\DTOs\TransferResult;
+use Yukazakiri\Lepton\Gateways\CircleRestGateway;
 use Yukazakiri\Lepton\Support\Amounts;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
+use Yukazakiri\Lepton\Support\UnsupportedOperation;
 
 final class LeptonManager
 {
@@ -75,6 +81,17 @@ final class LeptonManager
         return $this->circle()->wallets($options);
     }
 
+    /** @param array<string, mixed> $options @return array<string, mixed> */
+    public function createWalletSet(string $name, array $options = []): array
+    {
+        $gateway = $this->circle();
+        if (! $gateway instanceof CircleRestGateway) {
+            throw new UnsupportedOperation('Wallet set creation is supported by the developer REST driver only.');
+        }
+
+        return $gateway->createWalletSet($name, $options);
+    }
+
     /**
      * Create agent-controlled SCA wallets on supported chains.
      *
@@ -123,6 +140,37 @@ final class LeptonManager
     public function services(): X402Gateway
     {
         return $this->x402;
+    }
+
+    public function webhooks(): WebhookVerifier
+    {
+        return app(WebhookVerifier::class);
+    }
+
+    /** @param array<string, mixed> $options */
+    public function transfer(string $from, string $to, int $amountBaseUnits, array $options = []): TransferResult
+    {
+        return $this->wallets->transfer($from, $to, $amountBaseUnits, $options);
+    }
+
+    /** @param array<string, mixed> $options */
+    public function resolve(string $handle, array $options = []): TransferResolution
+    {
+        if (! $this->wallets instanceof TransferObserver) {
+            throw new UnsupportedOperation('This wallet driver does not support asynchronous observation.');
+        }
+
+        return $this->wallets->resolve($handle, $options);
+    }
+
+    /** @param array<string, mixed> $options @return array<string, mixed> */
+    public function estimateTransfer(string $from, string $to, int $amountBaseUnits, array $options = []): array
+    {
+        if (! $this->wallets instanceof TransferEstimator) {
+            throw new UnsupportedOperation('This wallet driver does not support transfer estimation.');
+        }
+
+        return $this->wallets->estimateTransfer($from, $to, $amountBaseUnits, $options);
     }
 
     /**

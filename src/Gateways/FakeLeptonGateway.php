@@ -7,7 +7,10 @@ namespace Yukazakiri\Lepton\Gateways;
 use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\CircleGateway;
+use Yukazakiri\Lepton\Contracts\TransferEstimator;
+use Yukazakiri\Lepton\Contracts\TransferObserver;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\WalletManagementGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
@@ -18,7 +21,7 @@ use Yukazakiri\Lepton\Support\LeptonRuntimeException;
 /**
  * In-memory driver for Pest tests and offline demo. No CLI, no chain.
  */
-final class FakeLeptonGateway implements ArcNetworkGateway, AuthGateway, CircleGateway, WalletGateway, X402Gateway
+final class FakeLeptonGateway implements ArcNetworkGateway, AuthGateway, CircleGateway, TransferEstimator, TransferObserver, WalletGateway, WalletManagementGateway, X402Gateway
 {
     /** @var array<string,int> */
     private array $ledger = [];
@@ -323,6 +326,11 @@ final class FakeLeptonGateway implements ArcNetworkGateway, AuthGateway, CircleG
             'status' => 'funded',
             'fake' => true,
         ];
+    }
+
+    public function estimateTransfer(string $fromAddress, string $toAddress, int $amountBaseUnits, array $options = []): array
+    {
+        return ['simulated' => true, 'networkFee' => '0', 'broadcast' => false];
     }
 
     public function signMessage(string $address, string $message, array $options = []): array

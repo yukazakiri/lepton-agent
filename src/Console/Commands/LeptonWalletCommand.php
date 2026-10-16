@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 
 final class LeptonWalletCommand extends Command
 {
-    protected $signature = 'lepton:wallet {action=list : Action to perform: list, create, fund} {address? : Wallet address for fund action} {--chain= : Blockchain to target} {--type=agent : Wallet type} {--testnet : Target testnets} {--mainnet : Target mainnet} {--amount= : Amount to fund} {--token=usdc : Token to fund} {--method= : Funding method} {--idempotency-key= : Idempotency key} {--json : Output as raw JSON}';
+    protected $signature = 'lepton:wallet {action=list : Action to perform: list, create, fund} {address? : Wallet address for fund action} {--chain= : Blockchain to target} {--type=agent : Wallet type} {--account-type=EOA : REST account type} {--wallet-set= : REST wallet set ID} {--testnet : Target testnets} {--mainnet : Target mainnet} {--amount= : Amount to fund} {--token=usdc : Token to fund} {--method= : Funding method} {--idempotency-key= : Idempotency key} {--json : Output as raw JSON}';
 
     protected $description = 'Manage Circle agent wallets (list, create, fund).';
 
@@ -19,6 +19,8 @@ final class LeptonWalletCommand extends Command
         return match ($action) {
             'create', 'new' => $this->call('lepton:wallet:create', [
                 '--type' => $this->option('type') ?? 'agent',
+                '--account-type' => $this->option('account-type'),
+                '--wallet-set' => $this->option('wallet-set'),
                 '--testnet' => (bool) $this->option('testnet'),
                 '--mainnet' => (bool) $this->option('mainnet'),
                 '--idempotency-key' => $this->option('idempotency-key'),

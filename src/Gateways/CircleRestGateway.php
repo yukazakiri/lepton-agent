@@ -4,812 +4,710 @@ declare(strict_types=1);
 
 namespace Yukazakiri\Lepton\Gateways;
 
-use Illuminate\Support\Str;
+use Closure;
 use InvalidArgumentException;
 use Throwable;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\CircleGateway;
+use Yukazakiri\Lepton\Contracts\JsonTransport;
+use Yukazakiri\Lepton\Contracts\TransferEstimator;
+use Yukazakiri\Lepton\Contracts\TransferObserver;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\WalletManagementGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
+use Yukazakiri\Lepton\DTOs\HttpResponse;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
 use Yukazakiri\Lepton\DTOs\TransferResolution;
 use Yukazakiri\Lepton\DTOs\TransferResult;
 use Yukazakiri\Lepton\Support\Amounts;
+use Yukazakiri\Lepton\Support\ApiException;
+use Yukazakiri\Lepton\Support\CircleWebhookVerifier;
+use Yukazakiri\Lepton\Support\CurlJsonTransport;
 use Yukazakiri\Lepton\Support\LeptonRuntimeException;
+use Yukazakiri\Lepton\Support\UnsupportedOperation;
 
 /**
- * Pure HTTP REST API gateway for Circle Developer-Controlled Wallets.
- *
- * Interacts directly with Circle's Web3 Services REST API (`api.circle.com/v1/w3s`),
- * completely eliminating external binary execution (no `circle` CLI, no Node.js).
- *
- * Authentication uses Circle API Key + 32-byte Entity Secret (encrypted asymmetrically
- * per-request with Circle's entity public key via RSA-OAEP SHA-256).
+ * Laravel-first SDK for Circle Developer-Controlled Wallets on Arc.
+ * Mutations are never automatically retried. The caller persists idempotency
+ * identity and reconciles an ambiguous submission instead of inventing a retry.
  */
-class CircleRestGateway implements AuthGateway, CircleGateway, WalletGateway, X402Gateway
+class CircleRestGateway implements AuthGateway, CircleGateway, TransferEstimator, TransferObserver, WalletGateway, WalletManagementGateway, X402Gateway
 {
     public const DEFAULT_BASE_URL = 'https://api.circle.com/v1/w3s';
 
-    /**
-     * In-memory cache for wallet addresses to wallet IDs.
-     *
-     * @var array<string,string>
-     */
-    private array $walletIdMap = [];
+    public const USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
 
-    /**
-     * Cached entity public key string.
-     */
+    /** @var array<string, array<string, mixed>> */
+    private array $walletsByContext = [];
+
     private ?string $cachedEntityPublicKey = null;
 
-    /**
-     * @param  (callable(string,string,array<string,string>,?array):array)|null  $httpClient  Custom HTTP handler for testing/mocking.
-     */
+    private JsonTransport $transport;
+
+    /** @var Closure(string, string, array<string, mixed>, ?array): (array|HttpResponse)|null */
+    private ?Closure $httpClient;
+
     public function __construct(
-        private readonly ?string $apiKey = null,
-        private readonly ?string $entitySecret = null,
-        private ?string $walletSetId = null,
+        #[\SensitiveParameter] private readonly ?string $apiKey = null,
+        #[\SensitiveParameter] private readonly ?string $entitySecret = null,
+        private readonly ?string $walletSetId = null,
         private readonly string $baseUrl = self::DEFAULT_BASE_URL,
         private readonly int $usdcDecimals = 6,
         private readonly bool $dryRun = false,
         private readonly ?string $defaultRpcUrl = null,
         private readonly int $timeout = 30,
-        private $httpClient = null,
-    ) {}
+        ?callable $httpClient = null,
+        ?JsonTransport $transport = null,
+    ) {
+        $this->transport = $transport ?? new CurlJsonTransport($timeout);
+        $this->httpClient = $httpClient === null ? null : Closure::fromCallable($httpClient);
+        if ($usdcDecimals !== 6) {
+            throw new InvalidArgumentException('The SDK USDC boundary uses six decimal base units.');
+        }
+        if (parse_url($baseUrl, PHP_URL_SCHEME) !== 'https' || ! str_ends_with(rtrim($baseUrl, '/'), '/v1/w3s')
+            || parse_url($baseUrl, PHP_URL_USER) !== null || parse_url($baseUrl, PHP_URL_PASS) !== null
+            || parse_url($baseUrl, PHP_URL_QUERY) !== null || parse_url($baseUrl, PHP_URL_FRAGMENT) !== null) {
+            throw new InvalidArgumentException('Circle base URL must be HTTPS and end with /v1/w3s.');
+        }
+    }
 
-    // =========================================================================
-    // WalletGateway Implementation
-    // =========================================================================
+    /** @return list<string> */
+    public function capabilities(): array
+    {
+        return ['wallets', 'createWallet', 'createWalletSet', 'fundTestnetWallet', 'balance', 'transfer',
+            'estimateTransfer', 'resolve', 'transactions', 'signMessage', 'signTypedData', 'execute', 'webhookVerification'];
+    }
 
     public function transfer(string $fromAddress, string $toAddress, int $amountBaseUnits, array $options = []): TransferResult
     {
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-
-        if ($this->dryRun || ! empty($options['estimate'])) {
-            throw new LeptonRuntimeException(
-                'A preflight is an estimate, not a submission. Read the fee from it and submit separately; '
-                .'do not treat an estimated amount as a transfer outcome.'
-            );
+        $this->assertWritable();
+        if (! empty($options['estimate'])) {
+            throw new LeptonRuntimeException('A preflight is an estimate, not a submission. Use estimateTransfer().');
         }
+        $body = $this->transferBody($fromAddress, $toAddress, $amountBaseUnits, $options);
+        $body['idempotencyKey'] = $this->idempotencyKey($options);
+        $body += $this->fee($options);
+        $response = $this->request('POST', '/developer/transactions/transfer', body: $body, needsCiphertext: true);
+        $data = $this->data($response);
+        $handle = $this->uuid((string) ($data['id'] ?? ''), 'transaction ID');
 
-        $walletId = $this->resolveWalletId($fromAddress, $chain);
-        $amount = Amounts::toCliAmount($amountBaseUnits, $this->usdcDecimals);
+        return new TransferResult(null, $fromAddress, $toAddress, $amountBaseUnits, $this->chain($options),
+            raw: $response, handle: $handle, state: 'accepted');
+    }
 
-        $body = [
-            'idempotencyKey' => (string) ($options['idempotencyKey'] ?? (string) Str::uuid()),
-            'walletId' => $walletId,
-            'destinationAddress' => $toAddress,
-            'amounts' => [$amount],
-            'fee' => [
-                'type' => 'level',
-                'config' => [
-                    'feeLevel' => strtoupper((string) ($options['feeLevel'] ?? 'MEDIUM')),
-                ],
-            ],
-        ];
-
-        if (! empty($options['token'])) {
-            $tokenParam = (string) $options['token'];
-            if (str_starts_with($tokenParam, '0x')) {
-                $body['tokenAddress'] = $tokenParam;
-            } else {
-                $body['tokenId'] = $tokenParam;
-            }
-        }
-
-        /** @var array<string,mixed> $response */
-        $response = $this->request('POST', '/developer/transactions/transfer', [], $body, true);
-        $data = $response['data'] ?? $response;
-
-        $txHash = $this->hash($data);
-        if ($txHash !== null) {
-            return new TransferResult(
-                txHash: $txHash,
-                fromAddress: $fromAddress,
-                toAddress: $toAddress,
-                amountBaseUnits: $amountBaseUnits,
-                chain: $chain,
-                isFake: false,
-                explorerUrl: app(\Yukazakiri\Lepton\Contracts\ArcNetworkGateway::class)->explorerUrl($txHash),
-                raw: $response,
-                state: 'submitted',
-            );
-        }
-
-        $handle = $this->handle($data);
-        if ($handle !== null) {
-            return new TransferResult(
-                txHash: null,
-                fromAddress: $fromAddress,
-                toAddress: $toAddress,
-                amountBaseUnits: $amountBaseUnits,
-                chain: $chain,
-                isFake: false,
-                explorerUrl: null,
-                raw: $response,
-                handle: $handle,
-                state: 'accepted',
-            );
-        }
-
-        throw new LeptonRuntimeException(
-            'Circle REST API returned neither an on-chain reference nor a transaction identifier. '
-            .'Raw response: '.json_encode($response)
-        );
+    public function estimateTransfer(string $fromAddress, string $toAddress, int $amountBaseUnits, array $options = []): array
+    {
+        return $this->data($this->request('POST', '/transactions/transfer/estimateFee',
+            body: $this->transferBody($fromAddress, $toAddress, $amountBaseUnits, $options)));
     }
 
     public function resolve(string $handle, array $options = []): TransferResolution
     {
+        $handle = $this->uuid($handle, 'transaction ID');
+        $chain = $this->chain($options);
         try {
-            $response = $this->request('GET', '/developer/transactions/'.$handle);
-            $tx = $response['data']['transaction'] ?? $response['data'] ?? $response;
-
-            if (! is_array($tx) || $tx === []) {
-                return TransferResolution::unknown(
-                    'The rail did not return this transaction. Its fate is unresolved; observe again before any retry.',
-                    $handle,
-                );
+            $data = $this->data($this->request('GET', '/transactions/'.$handle));
+            $tx = $data['transaction'] ?? null;
+            if (! is_array($tx) || ($tx['id'] ?? null) !== $handle || ($tx['blockchain'] ?? null) !== $chain
+                || (! empty($options['walletId']) && ($tx['walletId'] ?? null) !== $options['walletId'])
+                || (! empty($options['address']) && strcasecmp((string) ($tx['sourceAddress'] ?? ''), $options['address']) !== 0)) {
+                return TransferResolution::unknown('Transaction context does not match the requested identity and chain.', $handle);
+            }
+            $state = $tx['state'] ?? '';
+            $hash = $tx['txHash'] ?? null;
+            if ($state === 'COMPLETE') {
+                return is_string($hash) && preg_match('/^0x[0-9a-fA-F]{64}$/D', $hash) === 1
+                    ? TransferResolution::completed($hash, $handle, $tx)
+                    : TransferResolution::pending($handle, $tx);
+            }
+            if (in_array($state, ['FAILED', 'DENIED', 'CANCELLED'], true)) {
+                return TransferResolution::failed('Provider reports '.$state.'. Reconcile before any retry; fees may have been charged.', $handle, $tx);
+            }
+            if (in_array($state, ['INITIATED', 'WAITING', 'CLEARED', 'QUEUED', 'SENT', 'STUCK', 'CONFIRMED'], true)) {
+                return TransferResolution::pending($handle, $tx);
             }
 
-            $state = strtoupper((string) ($tx['state'] ?? ''));
-
-            return match ($state) {
-                'COMPLETE', 'CONFIRMED' => $this->resolutionFor($tx, $handle),
-                'FAILED', 'CANCELLED', 'CANCELED', 'DENIED', 'REJECTED' => TransferResolution::failed(
-                    'Circle reported the transfer as '.$state.'. No USDC moved; a retry needs a new submission.',
-                    $handle,
-                    $tx,
-                ),
-                default => TransferResolution::pending($handle, $tx),
-            };
-        } catch (Throwable $e) {
-            return TransferResolution::unknown(
-                'Lookup failed: '.$e->getMessage(),
-                $handle,
-            );
+            return TransferResolution::unknown('Unrecognized provider transaction state.', $handle);
+        } catch (Throwable) {
+            return TransferResolution::unknown('Transaction lookup unavailable; do not resubmit blindly.', $handle);
         }
     }
 
     public function balance(string $address, array $options = []): BalanceResult
     {
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $walletId = $this->resolveWalletId($address, $chain);
-
-        $response = $this->request('GET', "/developer/wallets/{$walletId}/balances");
-        $tokenBalances = $response['data']['tokenBalances'] ?? [];
-
-        $totalUnits = 0;
-        $matched = false;
-
-        foreach ((array) $tokenBalances as $tb) {
-            if (! is_array($tb) || ! isset($tb['amount']) || ! is_numeric($tb['amount'])) {
+        $chain = $this->chain($options);
+        $wallet = $this->wallet($address, $chain);
+        $rows = $this->paginate('/wallets/'.$wallet['id'].'/balances', 'tokenBalances', ['includeAll' => 'true']);
+        $canonical = null;
+        $native = null;
+        foreach ($rows as $row) {
+            $token = $row['token'] ?? null;
+            if (! is_array($token) || ($token['blockchain'] ?? null) !== $chain) {
+                throw new LeptonRuntimeException('Balance response contains missing or mismatched token context.');
+            }
+            $isNative = ($token['isNative'] ?? false) === true;
+            $isUsdc = strtolower((string) ($token['tokenAddress'] ?? $token['address'] ?? '')) === self::USDC_ADDRESS;
+            if (! $isNative && ! $isUsdc) {
                 continue;
             }
-
-            $token = is_array($tb['token'] ?? null) ? $tb['token'] : [];
-            $symbol = strtoupper((string) ($token['symbol'] ?? ''));
-            $decimals = isset($token['decimals']) ? (int) $token['decimals'] : $this->usdcDecimals;
-
-            if ($symbol === 'USDC' || $decimals === $this->usdcDecimals) {
-                $totalUnits += Amounts::fromDecimalString((string) $tb['amount'], $decimals);
-                $matched = true;
+            $scale = $isNative ? 18 : 6;
+            if (($token['decimals'] ?? null) !== $scale || ! is_string($row['amount'] ?? null)
+                || preg_match('/^\d+(?:\.\d{1,'.$scale.'})?$/D', $row['amount']) !== 1) {
+                throw new LeptonRuntimeException('USDC balance contains invalid precision or amount.');
+            }
+            [$whole, $fraction] = array_pad(explode('.', $row['amount'], 2), 2, '');
+            $units = Amounts::fromDecimalString($whole.'.'.str_pad(substr($fraction, 0, 6), 6, '0'));
+            if ($isNative) {
+                if ($native !== null && $native !== $units) {
+                    throw new LeptonRuntimeException('Ambiguous native USDC balance.');
+                }
+                $native = $units;
+            } else {
+                if ($canonical !== null && $canonical !== $units) {
+                    throw new LeptonRuntimeException('Ambiguous ERC-20 USDC balance.');
+                }
+                $canonical = $units;
             }
         }
-
-        if (! $matched && isset($response['data']['amount']) && is_numeric($response['data']['amount'])) {
-            $totalUnits = Amounts::fromDecimalString((string) $response['data']['amount'], $this->usdcDecimals);
+        if ($canonical !== null && $native !== null && $canonical !== $native) {
+            throw new LeptonRuntimeException('Arc native and ERC-20 USDC observations disagree.');
         }
 
-        return new BalanceResult($address, $totalUnits, $chain, false, $response);
+        return new BalanceResult($address, $canonical ?? $native ?? 0, $chain, false,
+            ['tokenBalances' => $rows, 'normalization' => 'six_decimal_floor_no_double_count']);
     }
 
     public function transactions(string $address, array $filters = []): array
     {
-        $chain = $filters['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $query = [];
-
-        try {
-            $walletId = $this->resolveWalletId($address, $chain);
-            $query['walletIds'] = $walletId;
-        } catch (Throwable) {
-            // If wallet ID not resolved, continue without filtering or pass empty
+        $chain = $this->chain($filters);
+        $wallet = $this->wallet($address, $chain);
+        $query = ['walletIds' => $wallet['id'], 'blockchain' => $chain];
+        foreach (['state', 'txType'] as $filter) {
+            if (isset($filters[$filter])) {
+                $query[$filter] = $filters[$filter];
+            }
+        }
+        $rows = $this->paginate('/transactions', 'transactions', $query);
+        $records = [];
+        foreach ($rows as $row) {
+            if (($row['walletId'] ?? null) !== $wallet['id'] || ($row['blockchain'] ?? null) !== $chain) {
+                throw new LeptonRuntimeException('Transaction list escaped its wallet/network scope.');
+            }
+            $records[] = new TransactionRecord($this->uuid((string) ($row['id'] ?? ''), 'transaction ID'),
+                isset($row['txHash']) ? (string) $row['txHash'] : null, (string) ($row['state'] ?? 'unknown'),
+                (string) ($row['operation'] ?? 'transfer'), $row);
         }
 
-        if (! empty($filters['state'])) {
-            $query['state'] = (string) $filters['state'];
-        }
-        if (! empty($filters['limit'])) {
-            $query['pageSize'] = (int) $filters['limit'];
-        }
-
-        $response = $this->request('GET', '/developer/transactions', $query);
-        $rows = $response['data']['transactions'] ?? [];
-
-        return array_values(array_filter(array_map(
-            fn (array $t): ?TransactionRecord => new TransactionRecord(
-                id: (string) ($t['id'] ?? ''),
-                txHash: is_string($t['txHash'] ?? null) ? $t['txHash'] : null,
-                state: (string) ($t['state'] ?? 'unknown'),
-                operation: (string) ($t['operation'] ?? $t['transactionType'] ?? 'transfer'),
-                raw: $t,
-            ),
-            (array) $rows,
-        ), fn (?TransactionRecord $record): bool => $record instanceof TransactionRecord && $record->id !== ''));
+        return isset($filters['limit']) ? array_slice($records, 0, max(0, (int) $filters['limit'])) : $records;
     }
 
     public function limits(string $address, array $options = []): array
     {
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-
-        return [
-            'address' => $address,
-            'chain' => $chain,
-            'declared_only' => true,
-            'type' => 'developer',
-        ];
+        return ['address' => $address, 'chain' => $this->chain($options), 'declared_only' => true,
+            'enforced' => false, 'supported' => false, 'type' => 'developer'];
     }
 
     public function wallets(array $options = []): array
     {
-        $query = [];
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        if (is_string($chain) && $chain !== '') {
-            $query['blockchain'] = $chain;
+        $chain = $this->chain($options);
+        $query = ['blockchain' => $chain];
+        $set = $options['walletSetId'] ?? $this->walletSetId;
+        if ($set !== null && $set !== '') {
+            $query['walletSetId'] = $this->uuid($set, 'wallet set ID');
         }
-        if (! empty($options['walletSetId']) || $this->walletSetId) {
-            $query['walletSetId'] = (string) ($options['walletSetId'] ?? $this->walletSetId);
-        }
-
-        $response = $this->request('GET', '/developer/wallets', $query);
-        $wallets = $response['data']['wallets'] ?? (array_is_list($response) ? $response : []);
-
-        foreach ((array) $wallets as $w) {
-            if (isset($w['address'], $w['id'])) {
-                $this->walletIdMap[strtolower((string) $w['address'])] = (string) $w['id'];
-            }
+        $rows = $this->paginate('/wallets', 'wallets', $query);
+        foreach ($rows as $row) {
+            $this->assertWallet($row, $chain, $set);
         }
 
-        return (array) $wallets;
+        return $rows;
     }
 
     public function createWallet(array $options = []): array
     {
-        if ($this->dryRun) {
-            throw new LeptonRuntimeException('Cannot create wallet while dry-run mode is enabled.');
+        $this->assertWritable();
+        $chain = $this->chain($options);
+        if ((isset($options['testnet']) && (bool) $options['testnet'] !== ($chain === 'ARC-TESTNET'))) {
+            throw new InvalidArgumentException('Wallet creation testnet option conflicts with chain.');
+        }
+        $set = $this->uuid((string) ($options['walletSetId'] ?? $this->walletSetId ?? ''), 'wallet set ID');
+        $type = strtoupper((string) ($options['accountType'] ?? 'EOA'));
+        if (! in_array($type, ['EOA', 'SCA'], true)) {
+            throw new InvalidArgumentException('REST wallet accountType must be EOA or SCA.');
+        }
+        $count = $options['count'] ?? 1;
+        if (! is_int($count) || $count < 1 || $count > 200) {
+            throw new InvalidArgumentException('Wallet count must be between 1 and 200.');
+        }
+        $response = $this->request('POST', '/developer/wallets', body: [
+            'idempotencyKey' => $this->idempotencyKey($options), 'accountType' => $type,
+            'blockchains' => [$chain], 'count' => $count, 'walletSetId' => $set,
+        ], needsCiphertext: true);
+        $rows = $this->data($response)['wallets'] ?? null;
+        if (! is_array($rows) || ! array_is_list($rows) || count($rows) !== $count) {
+            throw new LeptonRuntimeException('Wallet creation returned an unexpected response; reconcile before retrying.');
+        }
+        foreach ($rows as $row) {
+            $this->assertWallet($row, $chain, $set);
         }
 
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $walletSetId = $this->ensureWalletSetId($options['walletSetId'] ?? null);
+        return ['status' => 'created', 'wallets' => $rows, 'raw' => $response];
+    }
 
-        $body = [
-            'idempotencyKey' => (string) ($options['idempotencyKey'] ?? (string) Str::uuid()),
-            'accountType' => strtoupper((string) ($options['type'] ?? 'SCA')),
-            'blockchains' => [(string) $chain],
-            'count' => (int) ($options['count'] ?? 1),
-            'walletSetId' => $walletSetId,
-        ];
-
-        $response = $this->request('POST', '/developer/wallets', [], $body, true);
-        $wallets = $response['data']['wallets'] ?? (isset($response['data']) ? [$response['data']] : []);
-
-        foreach ((array) $wallets as $w) {
-            if (isset($w['address'], $w['id'])) {
-                $this->walletIdMap[strtolower((string) $w['address'])] = (string) $w['id'];
-            }
+    /** @param array<string, mixed> $options @return array<string, mixed> */
+    public function createWalletSet(string $name, array $options = []): array
+    {
+        $this->assertWritable();
+        if (trim($name) === '' || strlen($name) > 255) {
+            throw new InvalidArgumentException('A wallet set name is required (up to 255 bytes).');
         }
 
-        return [
-            'status' => 'created',
-            'wallets' => $wallets,
-            'raw' => $response,
-        ];
+        return $this->data($this->request('POST', '/developer/walletSets', body: [
+            'idempotencyKey' => $this->idempotencyKey($options), 'name' => $name,
+        ], needsCiphertext: true));
     }
 
     public function fundWallet(string $address, array $options = []): array
     {
-        if ($this->dryRun) {
-            throw new LeptonRuntimeException('Cannot fund wallet while dry-run mode is enabled.');
+        $this->assertWritable();
+        $chain = $this->chain($options);
+        if ($chain !== 'ARC-TESTNET') {
+            throw new UnsupportedOperation('REST funding is a testnet faucet request, never a mainnet funding operation.');
         }
+        $this->address($address);
+        $this->wallet($address, $chain);
+        $response = $this->send('POST', $this->origin().'/v1/faucet/drips', [], [
+            'address' => $address, 'blockchain' => $chain, 'usdc' => true, 'native' => false,
+        ])->data;
 
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-
-        $body = [
-            'address' => $address,
-            'blockchain' => $chain,
-            'native' => true,
-            'usdc' => true,
-        ];
-
-        if (! empty($options['token']) && strtolower((string) $options['token']) === 'eurc') {
-            $body['eurc'] = true;
-        }
-
-        // Faucet endpoint lives under /v1/faucet/drips
-        $faucetBase = preg_replace('#/w3s/?$#', '', $this->baseUrl);
-        $response = $this->requestRaw('POST', "{$faucetBase}/faucet/drips", [], $body);
-
-        return [
-            'status' => 'funded',
-            'address' => $address,
-            'chain' => $chain,
-            'raw' => $response,
-        ];
+        return ['status' => 'requested', 'address' => $address, 'chain' => $chain, 'raw' => $response];
     }
-
-    // =========================================================================
-    // AuthGateway Implementation
-    // =========================================================================
 
     public function authStatus(): array
     {
-        $hasKey = is_string($this->apiKey) && trim($this->apiKey) !== '';
-        $hasSecret = is_string($this->entitySecret) && trim($this->entitySecret) !== '';
-        $authenticated = $hasKey && $hasSecret;
+        $empty = ['authenticated' => false, 'email' => null, 'status' => 'UNVERIFIED', 'expires_in' => null];
+        $status = ['type' => 'developer', 'mainnet' => $empty, 'testnet' => $empty];
+        try {
+            $network = $this->keyNetwork();
+            $data = $this->data($this->request('GET', '/wallets', ['pageSize' => 1]));
+            if (! is_array($data['wallets'] ?? null)) {
+                return $status;
+            }
+            $status[$network] = ['authenticated' => true, 'email' => null, 'status' => 'API_ACCESS_VERIFIED', 'expires_in' => null];
+        } catch (Throwable) {
+            return $status;
+        }
 
-        return [
-            'type' => 'developer',
-            'mainnet' => [
-                'authenticated' => $authenticated,
-                'email' => $authenticated ? 'developer-api' : null,
-                'status' => $authenticated ? 'VALID' : 'MISSING_CREDENTIALS',
-                'expires_in' => 'never',
-            ],
-            'testnet' => [
-                'authenticated' => $authenticated,
-                'email' => $authenticated ? 'developer-api' : null,
-                'status' => $authenticated ? 'VALID' : 'MISSING_CREDENTIALS',
-                'expires_in' => 'never',
-            ],
-        ];
+        return $status;
     }
 
     public function beginLogin(string $email): string
     {
-        throw new LeptonRuntimeException(
-            'CircleRestGateway uses API Key + Entity Secret authentication (LEPTON_CIRCLE_API_KEY / LEPTON_ENTITY_SECRET), not interactive email OTP.'
-        );
+        throw new UnsupportedOperation('Developer-Controlled Wallets use an API key and registered Entity Secret, not email OTP.');
     }
 
     public function completeLogin(string $requestId, string $otp): array
     {
-        throw new LeptonRuntimeException(
-            'CircleRestGateway uses API Key + Entity Secret authentication (LEPTON_CIRCLE_API_KEY / LEPTON_ENTITY_SECRET), not interactive email OTP.'
-        );
+        throw new UnsupportedOperation('Developer-Controlled Wallets use an API key and registered Entity Secret, not email OTP.');
     }
 
     public function isAuthenticatedFor(string $chainCode = 'ARC-TESTNET'): bool
     {
-        return is_string($this->apiKey) && trim($this->apiKey) !== ''
-            && is_string($this->entitySecret) && trim($this->entitySecret) !== '';
-    }
+        try {
+            $chain = $this->chain(['chain' => $chainCode]);
+        } catch (LeptonRuntimeException) {
+            return false;
+        }
 
-    // =========================================================================
-    // CircleGateway Implementation
-    // =========================================================================
+        return $this->authStatus()[$chain === 'ARC-TESTNET' ? 'testnet' : 'mainnet']['authenticated'];
+    }
 
     public function run(array $args, bool $json = true, array $options = []): array|string
     {
-        $cmd = implode(' ', $args);
-
-        if (str_starts_with($cmd, 'wallet list')) {
-            return $this->wallets($options);
-        }
-        if (str_starts_with($cmd, 'wallet create')) {
-            return $this->createWallet($options);
-        }
-        if (str_starts_with($cmd, 'wallet fund') && isset($args[2])) {
-            return $this->fundWallet($args[2], $options);
-        }
-
-        throw new LeptonRuntimeException(
-            "Raw Circle CLI commands are not executable over CircleRestGateway ([{$cmd}]). "
-            .'Use the programmatic WalletGateway or CircleGateway methods instead.'
-        );
+        throw new UnsupportedOperation('Raw CLI commands are not supported by the REST SDK. Use typed gateway methods.');
     }
 
     public function signMessage(string $address, string $message, array $options = []): array
     {
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $walletId = $this->resolveWalletId($address, $chain);
+        $this->assertWritable();
+        $wallet = $this->wallet($address, $this->chain($options));
+        if ($message === '') {
+            throw new InvalidArgumentException('Signing message cannot be empty.');
+        }
+        if (! empty($options['encodedByHex']) && preg_match('/^0x(?:[0-9a-fA-F]{2})+$/D', $message) !== 1) {
+            throw new InvalidArgumentException('Hex signing messages must contain complete bytes.');
+        }
 
-        $body = [
-            'idempotencyKey' => (string) Str::uuid(),
-            'walletId' => $walletId,
-            'message' => base64_encode($message),
-        ];
-
-        return $this->request('POST', '/developer/sign/message', [], $body, true);
+        return $this->data($this->request('POST', '/developer/sign/message', body: [
+            'walletId' => $wallet['id'], 'message' => $message, 'encodedByHex' => (bool) ($options['encodedByHex'] ?? false),
+        ], needsCiphertext: true));
     }
 
     public function signTypedData(string $address, string $typedData, array $options = []): array
     {
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $walletId = $this->resolveWalletId($address, $chain);
+        $this->assertWritable();
+        $decoded = json_decode($typedData, true, 512, JSON_THROW_ON_ERROR);
+        if (! is_array($decoded) || ! isset($decoded['types'], $decoded['domain'], $decoded['message'], $decoded['primaryType'])) {
+            throw new InvalidArgumentException('Expected EIP-712 JSON with types, domain, primaryType, and message.');
+        }
+        $wallet = $this->wallet($address, $this->chain($options));
 
-        $body = [
-            'idempotencyKey' => (string) Str::uuid(),
-            'walletId' => $walletId,
-            'data' => is_array($typedData) ? $typedData : json_decode($typedData, true),
-        ];
+        if (isset($decoded['domain']['chainId']) && ! in_array($decoded['domain']['chainId'],
+            $this->chain($options) === 'ARC' ? [5042, '5042', '0x13b2', '0x13B2'] : [5042002, '5042002', '0x4cef52', '0x4CEF52'], true)) {
+            throw new InvalidArgumentException('EIP-712 domain chain ID conflicts with the selected network.');
+        }
 
-        return $this->request('POST', '/developer/sign/typedData', [], $body, true);
+        return $this->data($this->request('POST', '/developer/sign/typedData', body: [
+            'walletId' => $wallet['id'], 'data' => $typedData,
+        ], needsCiphertext: true));
     }
 
     public function execute(string $address, string $contract, string $signature, array $params = [], array $options = []): array
     {
-        if ($this->dryRun) {
-            throw new LeptonRuntimeException('Cannot execute smart contract write call while dry-run mode is enabled.');
+        if (empty($options['estimate'])) {
+            $this->assertWritable();
         }
+        $this->address($contract);
+        if (preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*\(.*\)$/D', $signature) !== 1) {
+            throw new InvalidArgumentException('Invalid ABI function signature.');
+        }
+        $wallet = $this->wallet($address, $this->chain($options));
+        $body = ['walletId' => $wallet['id'], 'contractAddress' => $contract,
+            'abiFunctionSignature' => $signature, 'abiParameters' => $params];
+        if (isset($options['amount'])) {
+            if (! is_string($options['amount'])) {
+                throw new InvalidArgumentException('Native contract value must be an exact decimal string.');
+            }
+            Amounts::fromDecimalString($options['amount']);
+            $body['amount'] = $options['amount'];
+        }
+        if (! empty($options['estimate'])) {
+            return $this->data($this->request('POST', '/transactions/contractExecution/estimateFee', body: $body));
+        }
+        $body['idempotencyKey'] = $this->idempotencyKey($options);
+        $body += $this->fee($options);
 
-        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
-        $walletId = $this->resolveWalletId($address, $chain);
-
-        $body = [
-            'idempotencyKey' => (string) ($options['idempotencyKey'] ?? (string) Str::uuid()),
-            'walletId' => $walletId,
-            'contractAddress' => $contract,
-            'abiFunctionSignature' => $signature,
-            'abiParameters' => $params,
-            'fee' => [
-                'type' => 'level',
-                'config' => [
-                    'feeLevel' => strtoupper((string) ($options['feeLevel'] ?? 'MEDIUM')),
-                ],
-            ],
-        ];
-
-        return $this->request('POST', '/developer/transactions/contractExecution', [], $body, true);
+        return $this->data($this->request('POST', '/developer/transactions/contractExecution', body: $body, needsCiphertext: true));
     }
 
     public function gatewayDeposit(string $address, int|string $amount, array $options = []): array
     {
-        throw new LeptonRuntimeException('Gateway deposit via CircleRestGateway is not currently supported; use CircleCliGateway.');
+        throw new UnsupportedOperation('REST driver does not implement Gateway deposits.');
     }
 
     public function gatewayWithdraw(string $address, int|string $amount, array $options = []): array
     {
-        throw new LeptonRuntimeException('Gateway withdraw via CircleRestGateway is not currently supported; use CircleCliGateway.');
+        throw new UnsupportedOperation('REST driver does not implement Gateway withdrawals.');
     }
 
     public function bridgeTransfer(string $fromAddress, string $toChain, int|string $amount, array $options = []): array
     {
-        throw new LeptonRuntimeException('CCTP bridge transfer via CircleRestGateway is not currently supported; use CircleCliGateway.');
+        throw new UnsupportedOperation('REST driver does not implement CCTP bridging.');
     }
 
     public function bridgeStatus(string $burnTxHash, array $options = []): array
     {
-        throw new LeptonRuntimeException('Bridge status via CircleRestGateway is not currently supported; use CircleCliGateway.');
+        throw new UnsupportedOperation('REST driver does not implement CCTP observation.');
     }
 
     public function bridgeFee(string $fromChain, string $toChain, array $options = []): array
     {
-        throw new LeptonRuntimeException('Bridge fee via CircleRestGateway is not currently supported; use CircleCliGateway.');
+        throw new UnsupportedOperation('REST driver does not implement CCTP fees.');
     }
 
     public function contractAddress(?string $name = null, array $options = []): array
     {
-        return [];
+        throw new UnsupportedOperation('REST driver does not provide a contract registry.');
     }
 
     public function contractQuery(string $contract, string $signature, array $params = [], array $options = []): mixed
     {
-        throw new LeptonRuntimeException('Contract read query via CircleRestGateway is not supported; query via ArcNetworkGateway::rpc.');
+        throw new UnsupportedOperation('Use ArcNetworkGateway::rpc for contract reads.');
     }
 
     public function blockchains(array $options = []): array
     {
-        return [
-            ['blockchain' => 'ARC', 'name' => 'Arc', 'testnet' => false],
-            ['blockchain' => 'ARC-TESTNET', 'name' => 'Arc Testnet', 'testnet' => true],
-        ];
+        return [['blockchain' => 'ARC', 'testnet' => false], ['blockchain' => 'ARC-TESTNET', 'testnet' => true]];
     }
-
-    // =========================================================================
-    // X402Gateway Implementation
-    // =========================================================================
 
     public function searchServices(string $query): array
     {
-        $response = $this->requestRaw('GET', 'https://api.circle.com/v2/x402/discovery/resources', ['query' => $query]);
-
-        return $response['resources'] ?? (array_is_list($response) ? $response : []);
+        throw new UnsupportedOperation('REST driver does not implement x402 discovery.');
     }
 
     public function inspectService(string $url, array $options = []): array
     {
-        return $this->requestRaw('GET', 'https://api.circle.com/v2/x402/discovery/resources', ['url' => $url]);
+        throw new UnsupportedOperation('REST driver does not implement x402 inspection.');
     }
 
     public function payService(string $url, string $fromAddress, array $options = []): array
     {
-        throw new LeptonRuntimeException('x402 micropayments via CircleRestGateway require client-side session negotiation.');
+        throw new UnsupportedOperation('REST driver does not implement x402 payments.');
     }
 
     public function gatewayBalance(string $address, array $options = []): array
     {
-        return ['address' => $address, 'balance' => '0', 'unsupported' => true];
+        throw new UnsupportedOperation('REST driver does not implement Gateway balance reads.');
     }
 
-    // =========================================================================
-    // Webhook Utilities
-    // =========================================================================
-
-    /**
-     * Verify a digital signature on an incoming Circle Webhook request.
-     */
-    public function verifyWebhookSignature(string $rawPayload, string $signatureBase64, string $publicKeyPem): bool
+    public function webhooks(): CircleWebhookVerifier
     {
-        $signature = base64_decode($signatureBase64, true);
-        if ($signature === false) {
-            return false;
-        }
-
-        return openssl_verify($rawPayload, $signature, $publicKeyPem, OPENSSL_ALGO_SHA256) === 1;
+        return new CircleWebhookVerifier($this->transport, $this->apiKey, $this->origin());
     }
 
-    // =========================================================================
-    // Cryptographic & Internal Helpers
-    // =========================================================================
-
-    /**
-     * Generate one-time Entity Secret Ciphertext using RSA-OAEP with SHA-256.
-     */
-    public function generateEntitySecretCiphertext(?string $entitySecret = null): string
+    public function generateEntitySecretCiphertext(#[\SensitiveParameter] ?string $entitySecret = null): string
     {
-        $secretHex = $entitySecret ?? $this->entitySecret;
-        if (! is_string($secretHex) || trim($secretHex) === '') {
-            throw new LeptonRuntimeException('Circle Developer Entity Secret is not configured.');
+        $secret = $entitySecret ?? $this->entitySecret;
+        if (! is_string($secret) || preg_match('/^[a-fA-F0-9]{64}$/D', $secret) !== 1) {
+            throw new LeptonRuntimeException('Entity Secret must be a registered 32-byte hex value.');
         }
-
-        $secretHex = trim($secretHex);
-        if (strlen($secretHex) !== 64 || ! ctype_xdigit($secretHex)) {
-            throw new LeptonRuntimeException('Entity Secret must be a 32-byte hex string (64 hexadecimal characters).');
-        }
-
-        $publicKeyPem = $this->fetchEntityPublicKey();
-        $binarySecret = (string) hex2bin($secretHex);
-
-        $encrypted = '';
-        $success = openssl_public_encrypt(
-            $binarySecret,
-            $encrypted,
-            $publicKeyPem,
-            OPENSSL_PKCS1_OAEP_PADDING,
-            'sha256'
-        );
-
-        if (! $success) {
-            throw new LeptonRuntimeException('Failed to encrypt Entity Secret with Circle public key.');
+        if (! openssl_public_encrypt(hex2bin($secret), $encrypted, $this->fetchEntityPublicKey(), OPENSSL_PKCS1_OAEP_PADDING, 'sha256')) {
+            throw new LeptonRuntimeException('Entity Secret encryption failed.');
         }
 
         return base64_encode($encrypted);
     }
 
-    /**
-     * Fetch Circle entity public key.
-     */
     public function fetchEntityPublicKey(): string
     {
         if ($this->cachedEntityPublicKey !== null) {
             return $this->cachedEntityPublicKey;
         }
-
-        $response = $this->request('GET', '/config/entity/publicKey');
-        $key = $response['data']['publicKey'] ?? $response['publicKey'] ?? null;
-
-        if (! is_string($key) || ! str_contains($key, 'PUBLIC KEY')) {
-            throw new LeptonRuntimeException('Could not retrieve valid Circle entity public key.');
+        $data = $this->data($this->request('GET', '/config/entity/publicKey'));
+        $key = $data['publicKey'] ?? null;
+        $public = is_string($key) ? openssl_pkey_get_public($key) : false;
+        $details = $public === false ? false : openssl_pkey_get_details($public);
+        if ($details === false || $details['type'] !== OPENSSL_KEYTYPE_RSA || $details['bits'] < 2048) {
+            throw new LeptonRuntimeException('Invalid RSA entity encryption key.');
         }
 
         return $this->cachedEntityPublicKey = $key;
     }
 
-    /**
-     * Ensure a wallet set ID is available, creating a default one if necessary.
-     */
-    public function ensureWalletSetId(?string $explicitId = null): string
+    /** @param array<string, mixed> $query @param array<string, mixed>|null $body @return array<string, mixed> */
+    public function request(string $method, string $endpoint, array $query = [], #[\SensitiveParameter] ?array $body = null, bool $needsCiphertext = false): array
     {
-        if (is_string($explicitId) && $explicitId !== '') {
-            return $explicitId;
+        if (! str_starts_with($endpoint, '/') || str_contains($endpoint, '..') || str_contains($endpoint, '?') || str_contains($endpoint, '#')) {
+            throw new InvalidArgumentException('Expected an absolute Circle API path without query or traversal.');
         }
-
-        if (is_string($this->walletSetId) && $this->walletSetId !== '') {
-            return $this->walletSetId;
+        if (strtoupper($method) !== 'GET' && ! str_ends_with($endpoint, '/estimateFee')) {
+            $this->assertWritable();
         }
-
-        // Attempt to fetch existing wallet sets
-        try {
-            $existing = $this->request('GET', '/developer/walletSets');
-            $sets = $existing['data']['walletSets'] ?? [];
-            if (is_array($sets) && isset($sets[0]['id'])) {
-                return $this->walletSetId = (string) $sets[0]['id'];
-            }
-        } catch (Throwable) {
-            // Fall through to create
-        }
-
-        // Create default wallet set
-        $created = $this->request('POST', '/developer/walletSets', [], [
-            'idempotencyKey' => (string) Str::uuid(),
-            'name' => 'Default Wallet Set',
-        ], true);
-
-        $setId = $created['data']['walletSet']['id'] ?? $created['id'] ?? null;
-        if (! is_string($setId) || $setId === '') {
-            throw new LeptonRuntimeException('Failed to create or obtain a Circle wallet set.');
-        }
-
-        return $this->walletSetId = $setId;
-    }
-
-    /**
-     * Resolve a wallet address or UUID to an authoritative Circle wallet ID.
-     */
-    public function resolveWalletId(string $addressOrId, string $blockchain): string
-    {
-        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $addressOrId) === 1) {
-            return $addressOrId;
-        }
-
-        $lookupKey = strtolower($addressOrId);
-        if (isset($this->walletIdMap[$lookupKey])) {
-            return $this->walletIdMap[$lookupKey];
-        }
-
-        $wallets = $this->wallets(['chain' => $blockchain]);
-        foreach ($wallets as $w) {
-            if (isset($w['address'], $w['id'])) {
-                $addr = strtolower((string) $w['address']);
-                $this->walletIdMap[$addr] = (string) $w['id'];
-                if ($addr === $lookupKey) {
-                    return (string) $w['id'];
-                }
-            }
-        }
-
-        throw new LeptonRuntimeException("Wallet address [{$addressOrId}] not found in Circle developer wallet set for {$blockchain}.");
-    }
-
-    private function resolutionFor(array $transaction, string $handle): TransferResolution
-    {
-        $hash = $transaction['txHash'] ?? null;
-
-        if (! is_string($hash) || preg_match('/^0x[0-9a-fA-F]{64}$/D', $hash) !== 1) {
-            return TransferResolution::pending($handle, [
-                'state' => 'COMPLETE',
-                'reason' => 'The rail reports the transfer complete but has not published a reference yet.',
-            ]);
-        }
-
-        return TransferResolution::completed($hash, $handle, [
-            'block_height' => $transaction['blockHeight'] ?? null,
-        ]);
-    }
-
-    private function handle(array $payload): ?string
-    {
-        $candidate = $payload['id']
-            ?? $payload['transactionId']
-            ?? $payload['transaction_id']
-            ?? null;
-
-        if (! is_string($candidate) || $candidate === '') {
-            return null;
-        }
-
-        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $candidate) === 1
-            ? $candidate
-            : null;
-    }
-
-    private function hash(array $payload): ?string
-    {
-        $value = $payload['txHash'] ?? $payload['transactionHash'] ?? $payload['hash'] ?? null;
-
-        return is_string($value) && preg_match('/^0x[0-9a-fA-F]{64}$/D', $value) === 1
-            ? $value
-            : null;
-    }
-
-    /**
-     * Send authenticated JSON request to Circle Developer REST API.
-     *
-     * @param  array<string,mixed>  $query
-     * @param  array<string,mixed>|null  $body
-     * @return array<string,mixed>
-     */
-    public function request(
-        string $method,
-        string $endpoint,
-        array $query = [],
-        ?array $body = null,
-        bool $needsCiphertext = false,
-    ): array {
         if ($needsCiphertext) {
-            $body = is_array($body) ? $body : [];
+            $body ??= [];
             $body['entitySecretCiphertext'] = $this->generateEntitySecretCiphertext();
         }
 
-        $url = rtrim($this->baseUrl, '/').'/'.ltrim($endpoint, '/');
-
-        return $this->requestRaw($method, $url, $query, $body);
+        return $this->send($method, rtrim($this->baseUrl, '/').$endpoint, $query, $body)->data;
     }
 
-    /**
-     * @param  array<string,mixed>  $query
-     * @param  array<string,mixed>|null  $body
-     * @return array<string,mixed>
-     */
-    private function requestRaw(
-        string $method,
-        string $url,
-        array $query = [],
-        ?array $body = null,
-    ): array {
+    /** @param array<string, mixed> $query @param array<string, mixed>|null $body */
+    private function send(string $method, string $url, array $query = [], #[\SensitiveParameter] ?array $body = null): HttpResponse
+    {
+        $this->keyNetwork();
         if ($this->httpClient !== null) {
-            return ($this->httpClient)($method, $url, $query, $body);
-        }
-
-        if ($query !== []) {
-            $url .= (str_contains($url, '?') ? '&' : '?').http_build_query($query);
-        }
-
-        $headers = [
-            'Accept: application/json',
-            'Content-Type: application/json',
-        ];
-
-        if (is_string($this->apiKey) && $this->apiKey !== '') {
-            $headers[] = "Authorization: Bearer {$this->apiKey}";
-        }
-
-        $encodedBody = $body !== null ? json_encode($body, JSON_THROW_ON_ERROR) : null;
-
-        if (function_exists('curl_init')) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_CUSTOMREQUEST => strtoupper($method),
-                CURLOPT_HTTPHEADER => $headers,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $this->timeout,
-            ]);
-
-            if ($encodedBody !== null) {
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $encodedBody);
+            $response = ($this->httpClient)($method, $url, $query, $body);
+            $response = $response instanceof HttpResponse ? $response : new HttpResponse(200, $response);
+        } else {
+            if ($query !== []) {
+                $url .= '?'.http_build_query($query);
             }
+            $response = $this->transport->request($method, $url,
+                ['Accept' => 'application/json', 'Content-Type' => 'application/json', 'Authorization' => 'Bearer '.$this->apiKey], $body);
+        }
+        if ($response->status < 200 || $response->status >= 300) {
+            throw new ApiException($response->status, $response->header('X-Request-Id'));
+        }
 
-            $raw = curl_exec($ch);
-            $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $err = curl_error($ch);
-            curl_close($ch);
+        return $response;
+    }
 
-            if ($raw === false || $statusCode >= 400) {
-                $errDetail = $raw !== false ? (string) $raw : $err;
-                throw new LeptonRuntimeException("Circle API request [{$method} {$url}] failed ({$statusCode}): {$errDetail}");
+    /** @param array<string, mixed> $response @return array<string, mixed> */
+    private function data(array $response): array
+    {
+        $data = $response['data'] ?? null;
+        if (! is_array($data)) {
+            throw new LeptonRuntimeException('Circle response is missing its data envelope; outcome may be unknown.');
+        }
+
+        return $data;
+    }
+
+    /** @param array<string, mixed> $query @return list<array<string, mixed>> */
+    private function paginate(string $path, string $collection, array $query = []): array
+    {
+        $rows = [];
+        $seen = [];
+        $query['pageSize'] = 50;
+        for ($page = 0; $page < 100; $page++) {
+            $response = $this->send('GET', rtrim($this->baseUrl, '/').$path, $query);
+            $data = $this->data($response->data);
+            $batch = $data[$collection] ?? null;
+            if (! is_array($batch) || ! array_is_list($batch)) {
+                throw new LeptonRuntimeException('Malformed paginated Circle response.');
             }
-
-            return (array) json_decode((string) $raw, true, flags: JSON_THROW_ON_ERROR);
+            foreach ($batch as $row) {
+                if (! is_array($row)) {
+                    throw new LeptonRuntimeException('Malformed Circle collection item.');
+                }
+                $rows[] = $row;
+            }
+            $cursor = $response->data['pagination']['nextPageAfter'] ?? $data['nextPageAfter'] ?? null;
+            if (preg_match('/<([^>]+)>;\s*rel="next"/', $response->header('Link') ?? '', $matches) === 1) {
+                parse_str((string) parse_url($matches[1], PHP_URL_QUERY), $parameters);
+                $cursor = $parameters['pageAfter'] ?? null;
+            }
+            if ($cursor === null && count($batch) === 50) {
+                $cursor = $batch[array_key_last($batch)]['id'] ?? null;
+            }
+            if ($cursor === null || $cursor === '') {
+                return $rows;
+            }
+            $cursor = $this->uuid((string) $cursor, 'pagination cursor');
+            if (isset($seen[$cursor])) {
+                throw new LeptonRuntimeException('Circle pagination repeated a cursor.');
+            }
+            $seen[$cursor] = true;
+            $query['pageAfter'] = $cursor;
         }
 
-        $options = [
-            'http' => [
-                'method' => strtoupper($method),
-                'header' => implode("\r\n", $headers)."\r\n",
-                'timeout' => $this->timeout,
-                'ignore_errors' => true,
-            ],
-        ];
+        throw new LeptonRuntimeException('Circle pagination exceeded the bounded page limit.');
+    }
 
-        if ($encodedBody !== null) {
-            $options['http']['content'] = $encodedBody;
+    /** @return array<string, mixed> */
+    private function wallet(string $addressOrId, string $chain): array
+    {
+        $key = $chain.':'.($this->walletSetId ?? '').':'.strtolower($addressOrId);
+        if (isset($this->walletsByContext[$key])) {
+            return $this->walletsByContext[$key];
+        }
+        if (preg_match('/^[0-9a-f-]{36}$/iD', $addressOrId) === 1) {
+            $id = $this->uuid($addressOrId, 'wallet ID');
+            $wallet = $this->data($this->request('GET', '/wallets/'.$id))['wallet'] ?? [];
+            $this->assertWallet($wallet, $chain, $this->walletSetId);
+            if ($wallet['id'] !== $id) {
+                throw new LeptonRuntimeException('Wallet lookup returned a different wallet ID.');
+            }
+        } else {
+            $this->address($addressOrId);
+            $matches = array_values(array_filter($this->wallets(['chain' => $chain]),
+                fn (array $wallet): bool => strcasecmp($wallet['address'], $addressOrId) === 0));
+            if (count($matches) !== 1) {
+                throw new LeptonRuntimeException('Wallet address is missing or ambiguous in the selected chain and wallet set.');
+            }
+            $wallet = $matches[0];
         }
 
-        $raw = @file_get_contents($url, false, stream_context_create($options));
-        if ($raw === false) {
-            throw new LeptonRuntimeException("Circle API request [{$method} {$url}] failed.");
+        return $this->walletsByContext[$key] = $wallet;
+    }
+
+    /** @param array<string, mixed> $wallet */
+    private function assertWallet(array $wallet, string $chain, ?string $set): void
+    {
+        $this->uuid((string) ($wallet['id'] ?? ''), 'wallet ID');
+        $this->address((string) ($wallet['address'] ?? ''));
+        if (($wallet['blockchain'] ?? null) !== $chain || ($wallet['custodyType'] ?? null) !== 'DEVELOPER'
+            || ! in_array($wallet['accountType'] ?? null, ['EOA', 'SCA'], true)
+            || ($set !== null && $set !== '' && ($wallet['walletSetId'] ?? null) !== $set)) {
+            throw new LeptonRuntimeException('Wallet does not match developer custody, account type, network, or wallet set.');
+        }
+    }
+
+    /** @param array<string, mixed> $options @return array<string, mixed> */
+    private function transferBody(string $from, string $to, int $units, array $options): array
+    {
+        $this->address($to);
+        if ($units <= 0) {
+            throw new InvalidArgumentException('Transfer amount must be positive integer USDC base units.');
+        }
+        $chain = $this->chain($options);
+        $wallet = $this->wallet($from, $chain);
+        $token = $options['token'] ?? self::USDC_ADDRESS;
+        if (! is_string($token) || ! in_array(strtolower($token), [self::USDC_ADDRESS, 'native'], true)) {
+            throw new UnsupportedOperation('This release transfers canonical Arc USDC only; token identifiers are not guessed.');
         }
 
-        return (array) json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+        return ['walletId' => $wallet['id'], 'destinationAddress' => $to,
+            'amounts' => [Amounts::toCliAmount($units)], 'blockchain' => $chain,
+            'tokenAddress' => strtolower($token) === 'native' ? '' : self::USDC_ADDRESS];
+    }
+
+    /** @param array<string, mixed> $options @return array<string, string> */
+    private function fee(array $options): array
+    {
+        foreach (['maxFeeBaseUnits', 'max_fee_base_units', 'feeCeiling', 'gasLimit', 'gasPrice', 'maxFee', 'priorityFee'] as $cap) {
+            if (array_key_exists($cap, $options)) {
+                throw new UnsupportedOperation('REST fee estimates/levels do not enforce a payer fee ceiling.');
+            }
+        }
+        $level = strtoupper((string) ($options['feeLevel'] ?? 'MEDIUM'));
+        if (! in_array($level, ['LOW', 'MEDIUM', 'HIGH'], true)) {
+            throw new InvalidArgumentException('Invalid Circle fee level.');
+        }
+
+        return ['feeLevel' => $level];
+    }
+
+    /** @param array<string, mixed> $options */
+    private function idempotencyKey(array $options): string
+    {
+        $key = $this->uuid((string) ($options['idempotencyKey'] ?? ''), 'persisted idempotency key');
+        if ($key[14] !== '4' || ! in_array(strtolower($key[19]), ['8', '9', 'a', 'b'], true)) {
+            throw new InvalidArgumentException('Circle idempotency key must be a persisted UUID v4.');
+        }
+
+        return $key;
+    }
+
+    /** @param array<string, mixed> $options */
+    private function chain(array $options): string
+    {
+        $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
+        if (! is_string($chain) || ! in_array($chain, ['ARC', 'ARC-TESTNET'], true)) {
+            throw new UnsupportedOperation('REST SDK currently supports ARC and ARC-TESTNET only.');
+        }
+        if ($this->keyNetwork() !== ($chain === 'ARC-TESTNET' ? 'testnet' : 'mainnet')) {
+            throw new LeptonRuntimeException('Circle API key environment does not match the selected network.');
+        }
+
+        return $chain;
+    }
+
+    private function keyNetwork(): string
+    {
+        if (! is_string($this->apiKey) || preg_match('/^(TEST|LIVE)_API_KEY:[^:\s]+:[^:\s]+$/D', $this->apiKey, $match) !== 1) {
+            throw new LeptonRuntimeException('Circle API key must use TEST_API_KEY or LIVE_API_KEY with ID and secret.');
+        }
+
+        return $match[1] === 'TEST' ? 'testnet' : 'mainnet';
+    }
+
+    private function assertWritable(): void
+    {
+        if ($this->dryRun) {
+            throw new LeptonRuntimeException('Dry-run blocks wallet mutations and signing. Use the explicit estimate methods.');
+        }
+    }
+
+    private function uuid(string $value, string $label): string
+    {
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iD', $value) !== 1) {
+            throw new InvalidArgumentException('Invalid '.$label.'.');
+        }
+
+        return $value;
+    }
+
+    private function address(string $value): void
+    {
+        if (preg_match('/^0x[0-9a-fA-F]{40}$/D', $value) !== 1 || strtolower($value) === '0x'.str_repeat('0', 40)) {
+            throw new InvalidArgumentException('Expected a nonzero EVM address with exactly 40 hex characters.');
+        }
+    }
+
+    private function origin(): string
+    {
+        return 'https://'.parse_url($this->baseUrl, PHP_URL_HOST).(parse_url($this->baseUrl, PHP_URL_PORT) === null ? '' : ':'.parse_url($this->baseUrl, PHP_URL_PORT));
     }
 }

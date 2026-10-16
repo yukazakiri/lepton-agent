@@ -1,157 +1,51 @@
 ---
 name: lepton-agent-settlement
-description: Prove that USDC payments actually settled on Arc, and design code that cannot mistake a stored transaction hash for proof. Use when recording payments, reconciling a ledger against the chain, handling transfer failures, or auditing whether a disbursement really moved money.
+description: Verify Circle and Arc payment evidence without confusing provider acceptance, hashes, notifications, or network outages with proven settlement. Use for reconciliation, recovery and audit.
 ---
 
 # Lepton Agent Settlement
 
-## When to use this skill
+## Evidence, not claims
 
-Use it when a payment is recorded, when a ledger is compared to a chain balance, when a
-transfer fails partway, or when anyone asks whether a disbursement really happened.
+A stored transaction hash is a claim, not proof. TransferResult may contain only
+provider handle plus accepted state. TransferObserver::resolve observes without
+resending; CONFIRMED is pending, COMPLETE plus hash is provider observation only.
 
-## The core rule
+Business settlement requires successful receipt in the intended network, matching
+token emitter/interface, sender, recipient, exact amount, and finality. Transaction
+visibility alone does not prove execution success. Circle SCA/relayer envelopes
+need movement-log checks; do not equate tx.from with the user's wallet blindly.
 
-**A transaction hash in your database is a claim, not proof.**
+## Uncertainty and retries
 
-`transfer()` returns a hash after the CLI reports success. That is evidence the Circle
-API accepted a request — not that a transaction exists at that hash. The two diverge
-whenever a request is fabricated, when a fake driver is left enabled, or when a hash is
-copied from elsewhere.
+Null, absent, timed-out, malformed, reverted or mismatched results are not proof
+of fabrication. Keep unsettled/unresolved and investigate the same submission.
+Never mark fabricated because RPC could not return evidence. Never resend with
+a new identity because the accepted handle or hash is delayed. Persist original
+UUID v4 before signing and keep write-ahead records/outbox in the application.
+Provider failed state may still incur gas; do not claim zero fee unconditionally.
 
-Treat every stored hash as unverified until the chain has confirmed it.
+## Notifications
 
-## Proving a single payment
+WebhookVerifier checks original raw bytes against ECDSA_SHA_256 notification key
+retrieved by X-Circle-Key-Id. Entity Secret RSA public key is unrelated. Reject
+missing/invalid signatures, wrong subscriptions, unacceptable timestamps or
+unavailable keys. Persist unique notificationId and payload digest before ACK;
+duplicates/out-of-order events only wake observation, never create a payment.
+Application must retain durable inbox, bounded queued recovery and polling.
 
-```php
-use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
+## Exact money and network
 
-$arc = app(ArcNetworkGateway::class);
+Use integer six-decimal USDC and string arithmetic for 18-decimal Arc quantities.
+Native and ERC-20 USDC views are the same funds; do not sum them. Never hexdec a
+quantity or multiply a float. Recipient must come from reviewed records, exactly
+40 hex characters after 0x; syntax is not proof of custody. Match driver, chain,
+API key environment, wallet set and token identity before any operation.
 
-$tx = $arc->rpc('eth_getTransactionByHash', [$hash]);
-$settled = is_array($tx) && $tx !== [];
-```
+## Testing
 
-A missing or `null` result from a reachable chain means the payment **never settled**.
-Do not retry the business logic on the assumption of a transient failure.
-
-If the RPC is unreachable, that is a different verdict — "unverifiable", not
-"fabricated". Never let a network outage mark good payments as failed. Fall back to
-Circle's own wallet history:
-
-```php
-$known = collect($wallets->transactions($address))
-    ->pluck('txHash')
-    ->all();
-```
-
-Only treat a hash as absent when the chain was actually reachable and did not know it.
-
-## The three verdicts
-
-Distinguish them, because they call for different responses:
-
-| Verdict | Meaning | Response |
-|---|---|---|
-| **verified** | Found on chain | Record as settled |
-| **fabricated** | Chain reachable, hash absent | Record as failed, investigate |
-| **unverifiable** | Could not reach the chain | Retry the check later, decide nothing |
-
-A ledger-only credit with no hash at all is neither success nor failure — it is an
-internal accounting entry, and it never moved USDC.
-
-## Recording outcomes honestly
-
-Store the verdict alongside the receipt, not just the status:
-
-```php
-$transaction->update([
-    'status' => TransactionStatus::FAILED,
-    'metadata' => array_merge($transaction->metadata, [
-        'reconciliation' => 'failed',
-        'reconciled_at' => now()->toIso8601String(),
-        'reconciliation_note' => 'Hash absent from chain; receipt never settled.',
-    ]),
-]);
-```
-
-Make the fix **idempotent**. A `--fix` style command that re-stamps rows it already
-reconciled will churn timestamps and make it impossible to tell what changed. Reject or
-skip rows already carrying `reconciliation = 'failed'`.
-
-When a command reports that something needs fixing, only say so when it actually does.
-Printing "run with --fix" underneath your own success message trains people to ignore
-the output.
-
-## Never fabricate a destination
-
-A payment address must come from a real record.
-
-A destination synthesised from a hash, an id, or string concatenation produces
-addresses that are either rejected by Circle or, worse, accepted. Circle requires
-`0x` plus exactly 40 hex characters — checksum casing is irrelevant, length is not.
-
-```php
-if (! preg_match('/^0x[0-9a-fA-F]{40}$/', $recipient)) {
-    throw new InvalidArgumentException('Payout address is not a valid 0x address.');
-}
-```
-
-When a recipient address is missing, **escalate to a human**. Do not generate one. A
-rejected address is recoverable; money sent to an address nobody controls is not.
-
-## Insufficient funds means the ledger lied
-
-`the asset amount owned by the wallet is insufficient for the transaction` almost
-always means the recorded balance is fiction — a seeded or assumed figure the chain
-does not support.
-
-A deterministic policy engine that checks a *database* balance will happily approve a
-payment the chain will refuse. The engine is authoritative about *policy*; the chain is
-authoritative about *funds*. Both must agree before a disbursement is attempted.
-
-Surface the drift rather than hiding it:
-
-```php
-$drift = $ledgerBalance - $onchainBalance;
-```
-
-## Gas is the same token
-
-On Arc, USDC is the gas token. A wallet needs USDC to send anything at all, including
-a zero-value transfer. "My balance reads zero" is sometimes really "no gas", and a
-wallet funded only in a non-native token cannot broadcast.
-
-## Preflight before you commit
-
-Use the `estimate` option to learn the real fee without broadcasting:
-
-```php
-$wallets->transfer($from, $to, $units, ['estimate' => true]);
-```
-
-Set `LEPTON_DRY_RUN=true` in non-production to make every transfer estimate-only.
-
-## Test the failure path
-
-The bug this guards against is invisible unless you test for it. Bind a stub chain that
-knows about **exactly one** hash, and assert the others come back fabricated:
-
-```php
-$arc = new class($knownHash) implements ArcNetworkGateway {
-    public function rpc(string $method, array $params = []): mixed
-    {
-        if ($method !== 'eth_getTransactionByHash') {
-            return null;
-        }
-
-        return $params[0] === $this->knownHash
-            ? ['blockNumber' => '0x3d667a7', 'hash' => $this->knownHash]
-            : null;
-    }
-    // ... remaining interface methods
-};
-```
-
-A reconciliation test that cannot produce a "fabricated" verdict is not testing
-anything.
+LEPTON_DRIVER=fake needs no network, no credentials and no cost; simulated only.
+Test success, reverts, mismatches, delayed/missing references, outage, duplicate
+delivery, changed payload identity, and out-of-order events. Assert uncertain
+results never settle or re-submit. A hash fixture alone is not a full settlement
+test. Explicit testnet validation and security review still gate production.

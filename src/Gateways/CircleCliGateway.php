@@ -6,9 +6,13 @@ namespace Yukazakiri\Lepton\Gateways;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Yukazakiri\Lepton\Contracts\ArcNetworkGateway;
 use Yukazakiri\Lepton\Contracts\AuthGateway;
 use Yukazakiri\Lepton\Contracts\CircleGateway;
+use Yukazakiri\Lepton\Contracts\TransferEstimator;
+use Yukazakiri\Lepton\Contracts\TransferObserver;
 use Yukazakiri\Lepton\Contracts\WalletGateway;
+use Yukazakiri\Lepton\Contracts\WalletManagementGateway;
 use Yukazakiri\Lepton\Contracts\X402Gateway;
 use Yukazakiri\Lepton\DTOs\BalanceResult;
 use Yukazakiri\Lepton\DTOs\TransactionRecord;
@@ -42,7 +46,7 @@ use Yukazakiri\Lepton\Support\LeptonRuntimeException;
  * alternative is recording an invented reference — the exact failure this
  * package exists to prevent.
  */
-class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X402Gateway
+class CircleCliGateway implements AuthGateway, CircleGateway, TransferEstimator, TransferObserver, WalletGateway, WalletManagementGateway, X402Gateway
 {
     public function __construct(
         private readonly CliRunner $circle,
@@ -76,7 +80,7 @@ class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X40
             $args[] = '--estimate';
         }
 
-        $out = $this->circle->run($args);
+        $out = $this->circle->runJson($args);
         $payload = self::unwrap($out);
 
         // An estimate is not a transfer, and must never be promoted into one.
@@ -97,7 +101,7 @@ class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X40
                 amountBaseUnits: $amountBaseUnits,
                 chain: $chain,
                 isFake: false,
-                explorerUrl: app(\Yukazakiri\Lepton\Contracts\ArcNetworkGateway::class)->explorerUrl($txHash),
+                explorerUrl: app(ArcNetworkGateway::class)->explorerUrl($txHash),
                 raw: $out,
                 state: 'submitted',
             );
@@ -129,11 +133,24 @@ class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X40
         );
     }
 
+    public function estimateTransfer(string $fromAddress, string $toAddress, int $amountBaseUnits, array $options = []): array
+    {
+        $args = ['wallet', 'transfer', $toAddress, '--amount', Amounts::toCliAmount($amountBaseUnits, $this->usdcDecimals),
+            '--address', $fromAddress, '--chain', $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET'), '--estimate'];
+        $output = $this->circle->run($args);
+
+        return self::unwrap($output);
+    }
+
     public function resolve(string $handle, array $options = []): TransferResolution
     {
         $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
 
-        $out = $this->circle->run(['transaction', 'list', '--chain', $chain, '--output', 'json']);
+        try {
+            $out = $this->circle->runJson(['transaction', 'list', '--chain', $chain]);
+        } catch (\Throwable) {
+            return TransferResolution::unknown('Circle lookup unavailable; do not resubmit blindly.', $handle);
+        }
         $transactions = self::unwrap($out)['transactions'] ?? [];
 
         foreach ((array) $transactions as $transaction) {
@@ -145,8 +162,8 @@ class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X40
 
             return match ($state) {
                 'COMPLETE' => $this->resolutionFor($transaction, $handle),
-                'FAILED', 'CANCELED', 'REJECTED' => TransferResolution::failed(
-                    'Circle reported the transfer as '.$state.'. No USDC moved; a retry needs a new submission.',
+                'FAILED', 'CANCELED', 'CANCELLED', 'DENIED', 'REJECTED' => TransferResolution::failed(
+                    'Circle reported the transfer as '.$state.'. Reconcile before retrying; fees may have been charged.',
                     $handle,
                     ['state' => $state],
                 ),
@@ -166,14 +183,37 @@ class CircleCliGateway implements AuthGateway, CircleGateway, WalletGateway, X40
         $chain = $options['chain'] ?? config('lepton.arc.chain', 'ARC-TESTNET');
         $out = self::unwrap($this->circle->run(['wallet', 'balance', '--address', $address, '--chain', $chain, '--output', 'json']));
 
-        $native = 0;
-        foreach ((array) ($out['balances'] ?? []) as $token) {
-            if (($token['token']['isNative'] ?? false) === true) {
-                $native += (int) round((float) ($token['amount'] ?? 0) * (10 ** $this->usdcDecimals));
+        $native = null;
+        $erc20 = null;
+        foreach ((array) ($out['balances'] ?? []) as $row) {
+            $token = $row['token'] ?? [];
+            $isNative = ($token['isNative'] ?? false) === true;
+            $isUsdc = strtolower((string) ($token['tokenAddress'] ?? $token['address'] ?? '')) === CircleRestGateway::USDC_ADDRESS;
+            if (! in_array($chain, ['ARC', 'ARC-TESTNET'], true) || (! $isNative && ! $isUsdc)) {
+                continue;
+            }
+            if (! is_string($row['amount'] ?? null) || preg_match('/^\d+(?:\.\d{1,18})?$/D', $row['amount']) !== 1) {
+                throw new LeptonRuntimeException('Invalid exact USDC balance response.');
+            }
+            [$whole, $fraction] = array_pad(explode('.', $row['amount'], 2), 2, '');
+            $units = Amounts::fromDecimalString($whole.'.'.str_pad(substr($fraction, 0, 6), 6, '0'));
+            if ($isNative) {
+                if ($native !== null && $native !== $units) {
+                    throw new LeptonRuntimeException('Ambiguous native USDC balance.');
+                }
+                $native = $units;
+            } else {
+                if ($erc20 !== null && $erc20 !== $units) {
+                    throw new LeptonRuntimeException('Ambiguous ERC-20 USDC balance.');
+                }
+                $erc20 = $units;
             }
         }
+        if ($native !== null && $erc20 !== null && $native !== $erc20) {
+            throw new LeptonRuntimeException('Arc balance interfaces disagree.');
+        }
 
-        return new BalanceResult($address, $native, $chain, false, $out);
+        return new BalanceResult($address, $erc20 ?? $native ?? 0, $chain, false, $out);
     }
 
     public function transactions(string $address, array $filters = []): array

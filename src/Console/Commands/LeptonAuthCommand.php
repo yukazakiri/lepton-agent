@@ -26,7 +26,7 @@ final class LeptonAuthCommand extends Command
 
     public function handle(AuthGateway $auth): int
     {
-        if ($this->option('status') || $this->argument('email') === null) {
+        if ($this->option('status') || ($this->argument('email') === null && ! $this->option('request'))) {
             return $this->showStatus($auth);
         }
 

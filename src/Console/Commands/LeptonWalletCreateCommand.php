@@ -10,7 +10,7 @@ use Yukazakiri\Lepton\LeptonManager;
 
 final class LeptonWalletCreateCommand extends Command
 {
-    protected $signature = 'lepton:wallet:create {--type=agent : Wallet type: agent (default)} {--testnet : Create wallets on supported testnets} {--mainnet : Force mainnet wallet creation} {--idempotency-key= : Idempotency key for request deduplication} {--json : Output as raw JSON}';
+    protected $signature = 'lepton:wallet:create {--type=agent : CLI wallet type} {--account-type=EOA : REST account type: EOA or SCA} {--wallet-set= : Explicit REST wallet set ID} {--testnet : Create wallets on supported testnets} {--mainnet : Force mainnet wallet creation} {--idempotency-key= : Idempotency key for request deduplication} {--json : Output as raw JSON}';
 
     protected $aliases = ['lepton:wallet-create'];
 
@@ -28,6 +28,18 @@ final class LeptonWalletCreateCommand extends Command
             'type' => (string) ($this->option('type') ?? 'agent'),
             'testnet' => $isTestnet,
         ];
+        if ($this->option('testnet') && $this->option('mainnet')) {
+            $this->error('Choose testnet or mainnet, not both.');
+
+            return self::FAILURE;
+        }
+        if (in_array(config('lepton.default'), ['developer', 'circle-rest'], true)) {
+            $options['chain'] = $isTestnet ? 'ARC-TESTNET' : 'ARC';
+            $options['accountType'] = (string) $this->option('account-type');
+            if ($this->option('wallet-set')) {
+                $options['walletSetId'] = (string) $this->option('wallet-set');
+            }
+        }
 
         if ($idempotencyKey = $this->option('idempotency-key')) {
             $options['idempotencyKey'] = (string) $idempotencyKey;
@@ -47,7 +59,7 @@ final class LeptonWalletCreateCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->info('✓ Wallet created successfully.');
+        $this->info('✓ Wallet created successfully.'.(! empty($result['fake']) ? ' Simulated; no real wallet created.' : ''));
 
         $wallets = $result['wallets'] ?? (isset($result['address']) ? [$result] : []);
 
@@ -60,7 +72,9 @@ final class LeptonWalletCreateCommand extends Command
 
             $this->table(['Address', 'Blockchain', 'Type'], $rows);
 
-            $firstAddress = $wallets[0]['address'] ?? null;
+            $configuredChain = (string) config('lepton.arc.chain', 'ARC-TESTNET');
+            $matching = array_values(array_filter($wallets, fn (array $wallet): bool => ($wallet['blockchain'] ?? null) === $configuredChain));
+            $firstAddress = count($matching) === 1 ? ($matching[0]['address'] ?? null) : null;
             if ($firstAddress) {
                 $this->newLine();
                 $this->line('  To use as your treasury wallet:');
