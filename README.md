@@ -18,6 +18,22 @@ community PHP integration.
 > authorized testnet validation. Do not treat a passing suite as certification
 > for production funds. See [production readiness](#production-readiness).
 
+## Documentation
+
+Full Astro Starlight documentation lives in [`docs/`](docs/README.md): offline
+quickstart, driver setup, wallet lifecycle, reliable payments, verified
+notifications, PHP/Artisan reference, and production-readiness gates.
+
+```bash
+cd docs
+npm ci
+npm run dev
+```
+
+Requires Node.js 22.22+. Default local path is `/lepton-agent/`. Static hosting
+and manual GitHub Pages deployment instructions are in the
+[documentation guide](docs/src/content/docs/project/documentation.md).
+
 ## Contents
 
 - [Requirements](#requirements)

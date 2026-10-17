@@ -1,0 +1,29 @@
+{
+  "name": "@lepton-agent/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "check": "astro check",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "engines": {
+    "node": ">=22.22.0",
+    "npm": ">=9.6.5"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.6",
+    "astro": "^7.4.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "postcss-nested": {
+      "postcss-selector-parser": "^7.1.6"
+    }
+  }
+}

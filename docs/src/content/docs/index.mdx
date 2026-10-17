@@ -1,0 +1,61 @@
+---
+title: Lepton Agent SDK
+description: Build Laravel integrations for Circle wallets and Arc, from offline rehearsal to observed payments.
+template: splash
+hero:
+  tagline: Circle wallets. Laravel contracts. Settlement you verify.
+  actions:
+    - text: Run offline quickstart
+      link: ./getting-started/quickstart/
+      icon: right-arrow
+    - text: Choose your driver
+      link: ./getting-started/drivers/
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Laravel-first, community-maintained
+
+Lepton wraps wallet operations in injected PHP contracts, a facade, typed results,
+Artisan commands, and an in-memory fake. Use it for treasury dashboards, approved
+USDC payouts, and workers that observe accepted transfers without sending again.
+It is **not an official Circle SDK**, custody migration tool, invoice engine, or
+financial settlement service. Licensed under MIT.
+
+<CardGrid>
+  <Card title="Start without funds" icon="rocket">
+    Install in Laravel 13 on PHP 8.5, seed a fake balance, and exercise a complete
+    transfer without credentials, network access, or cost.
+  </Card>
+  <Card title="Choose transport deliberately" icon="setting">
+    Developer-Controlled Wallets use HTTPS and API credentials. Existing Agent
+    Stack integrations use Circle CLI and its separate session model.
+  </Card>
+  <Card title="Keep money exact" icon="approve-check">
+    Pass integer six-decimal USDC units or exact decimal strings. Never multiply
+    floats or combine Arc native and ERC-20 views of the same balance.
+  </Card>
+  <Card title="Observe before settling" icon="magnifier">
+    Store provider IDs, verify notifications, and reconcile on-chain evidence.
+    Accepted submissions and published hashes do not prove business settlement.
+  </Card>
+</CardGrid>
+
+:::caution[Release candidate, not production certification]
+Offline hardening tests exist. Live Circle wallet creation, signing, transfers,
+and notification delivery still need separately authorized testnet validation.
+This checkout also contains literal `[REDACTED]` configuration values; read
+[REST setup](./guides/developer-wallets/) before attempting live integration.
+:::
+
+## Pick your path
+
+| Goal | Read next |
+| --- | --- |
+| Evaluate package locally | [Offline quickstart](./getting-started/quickstart/) |
+| Integrate Developer-Controlled Wallets | [REST setup](./guides/developer-wallets/), then [wallet lifecycle](./guides/wallets/) |
+| Use an existing Agent Stack session | [CLI authentication](./guides/cli-authentication/) |
+| Build a payout worker | [Reliable payments](./guides/payments/) and [notifications](./guides/webhooks/) |
+| Build a treasury dashboard | [Arc reads](./guides/arc/) and [API reference](./reference/api/) |
+| Contribute or publish docs | [Contributing](./project/contributing/) and [documentation deployment](./project/documentation/) |
