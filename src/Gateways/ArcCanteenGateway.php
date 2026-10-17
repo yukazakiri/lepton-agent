@@ -85,8 +85,15 @@ final class ArcCanteenGateway implements ArcNetworkGateway
     {
         if (! $this->networkVerified) {
             $network = $this->httpJsonRpc($this->rpcUrl(), 'eth_chainId', []);
+            $validNetworks = [
+                ['ARC', 5040],
+                ['ARC', 5040001],
+                ['ARC', 5042],
+                ['ARC-TESTNET', 5042],
+                ['ARC-TESTNET', 5042002],
+            ];
             if (! is_string($network) || Amounts::fromHexQuantity($network, 0) !== (string) $this->chainId
-                || ! in_array([$this->chainCode, $this->chainId], [['ARC', 5042], ['ARC-TESTNET', 5042002]], true)) {
+                || ! in_array([$this->chainCode, $this->chainId], $validNetworks, true)) {
                 throw new LeptonRuntimeException('Arc RPC chain ID does not match the configured network.');
             }
             $this->networkVerified = true;
